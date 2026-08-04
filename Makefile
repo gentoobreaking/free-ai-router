@@ -10,7 +10,7 @@ build:
 docker:
 	go build -o freemodel-router ./cmd/freemodel
 
-build-all:
+all:
 	@echo "Building for all platforms..."
 	@mkdir -p $(DIST)
 	GOOS=darwin GOARCH=amd64 go build -o $(DIST)/$(BINARY)-darwin-amd64 ./cmd/freemodel

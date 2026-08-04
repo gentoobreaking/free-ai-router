@@ -2,11 +2,44 @@ package tui
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/freemodel/router/internal/models"
 	"github.com/freemodel/router/internal/ping"
+)
+
+var (
+	headerStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62")).Padding(0, 1)
+	tableStyle     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	footerStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	titleStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("208"))
+	dimStyle       = lipgloss.NewStyle().Faint(true)
+	cyanStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
+	greenStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	yellowStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	redStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	brightGreen    = lipgloss.NewStyle().Foreground(lipgloss.Color("84"))
+	brightCyan     = lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
+	tierSPlus      = lipgloss.NewStyle().Foreground(lipgloss.Color("84"))
+	tierS          = lipgloss.NewStyle().Foreground(lipgloss.Color("84"))
+	tierAPlus      = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	tierA          = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	tierAMinus     = lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
+	tierBPlus      = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	tierB          = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	tierC          = lipgloss.NewStyle().Faint(true)
+	verdictPerfect = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	verdictNormal  = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	verdictSlow    = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	verdictVerySlow = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	verdictUnusable = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	verdictOverloaded = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	verdictUnstable = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	verdictNotActive = lipgloss.NewStyle().Faint(true)
+	verdictPending = lipgloss.NewStyle().Faint(true)
+	dimText        = lipgloss.NewStyle().Faint(true)
+	boldText       = lipgloss.NewStyle().Bold(true)
 )
 
 type RenderOptions struct {
@@ -25,139 +58,60 @@ type RenderOptions struct {
 	Height         int
 }
 
-type Renderer struct {
-	builder strings.Builder
+func RenderLayout(opts *RenderOptions) string {
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		renderHeader(opts),
+		renderTable(opts),
+		renderFooter(opts),
+	)
 }
 
-func NewRenderer() *Renderer {
-	return &Renderer{}
-}
-
-func (r *Renderer) Render(opts *RenderOptions) string {
-	r.builder.Reset()
-	r.builder.WriteString(ClearScreen())
-	r.builder.WriteString(CursorHome())
-
-	r.renderHeader(opts)
-	r.renderTable(opts)
-	r.renderFooter(opts)
-
-	return r.builder.String()
-}
-
-func visualLen(s string) int {
-	n := 0
-	inEscape := false
-	for _, r := range s {
-		if r == '\x1b' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			if r == 'm' || r == 'H' || r == 'h' || r == 'l' || r == 'J' {
-				inEscape = false
-			}
-			continue
-		}
-		n++
-	}
-	return n
-}
-
-func (r *Renderer) renderHeader(opts *RenderOptions) {
-	w := opts.Width
-	if w < 60 {
-		w = 60
+func renderHeader(opts *RenderOptions) string {
+	width := opts.Width
+	if width < 60 {
+		width = 60
 	}
 
-	r.builder.WriteString(BorderRow(w - 2))
-	r.builder.WriteString("\n")
-
-	title := " freemodel-router "
+	title := titleStyle.Render(" freemodel-router ")
 	tag := ""
 	if opts.CodingOnly {
-		tag = ProviderTag("ready") + " "
+		tag = lipgloss.NewStyle().Background(lipgloss.Color("22")).Render(" READY ") + " "
 	}
-	available := w - 2 - visualLen(title) - visualLen(tag)
-	r.builder.WriteString("│")
-	r.builder.WriteString(Bold)
-	r.builder.WriteString(title)
-	r.builder.WriteString(Reset)
-	r.builder.WriteString(tag)
-	r.builder.WriteString(strings.Repeat("─", available))
-	r.builder.WriteString("│\n")
 
-	searchContent := " Model Search  /" + opts.SearchQuery + "  " + fmt.Sprintf("%d/%d models", len(opts.Models), opts.TotalCount)
-	searchPadding := w - 2 - visualLen(searchContent)
-	if searchPadding < 1 {
-		searchPadding = 1
-	}
-	r.builder.WriteString("│")
-	r.builder.WriteString(searchContent)
-	r.builder.WriteString(strings.Repeat(" ", searchPadding))
-	r.builder.WriteString("│\n")
+	headerContent := title + tag + "  Model Search  /" + opts.SearchQuery + "  " +
+		fmt.Sprintf("%d/%d models", len(opts.Models), opts.TotalCount)
 
+	header := lipgloss.NewStyle().
+		Width(width).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Render(headerContent)
+
+	selected := ""
 	if opts.SelectedIndex >= 0 && opts.SelectedIndex < len(opts.Models) {
 		m := opts.Models[opts.SelectedIndex]
-		selectedPrefix := "│ Selected: "
-		sweText := fmt.Sprintf("SWE:%.1f%%", m.QualityScore*100)
-		codingTag := ""
+		selected = fmt.Sprintf("│ Selected: %s  SWE:%.1f%%",
+			cyanStyle.Render(m.ID), m.QualityScore*100)
 		if hasTag(m.Tags, "coding") {
-			codingTag = "  " + Color("Code:✓", Green)
+			selected += "  " + greenStyle.Render("Code:✓")
 		}
-		selectedContent := selectedPrefix + Color(m.ID, BrightCyan) + "  " + sweText + codingTag
-		selectedPadding := w - 2 - visualLen(selectedContent)
-		if selectedPadding < 1 {
-			selectedPadding = 1
-		}
-		r.builder.WriteString(selectedContent)
-		r.builder.WriteString(strings.Repeat(" ", selectedPadding))
-		r.builder.WriteString("│\n")
 	}
 
-	r.builder.WriteString(SeparatorRow(w - 2))
-	r.builder.WriteString("\n")
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		header,
+		selected,
+	)
 }
 
-const (
-	fixedColWidth = 4 + 6 + 13 + 7 + 6 + 8 + 8 + 6 + 16 // sum of all columns except Model
-	separatorWidth = 31                                     // │ + spaces between columns + │
-)
-
-func modelColWidth(termWidth int) int {
-	w := termWidth - fixedColWidth - separatorWidth
-	if w < 5 {
-		w = 5
-	}
-	if w > 34 {
-		w = 34
-	}
-	return w
-}
-
-func (r *Renderer) renderTable(opts *RenderOptions) {
-	w := opts.Width
-	if w < 60 {
-		w = 60
+func renderTable(opts *RenderOptions) string {
+	width := opts.Width
+	if width < 60 {
+		width = 60
 	}
 
-	modelW := modelColWidth(w)
-
-	r.builder.WriteString(BorderRow(w - 2))
-	r.builder.WriteString("\n")
-
-	header := fmt.Sprintf("│ %-4s │ %s │ %-13s │ %-"+strconv.Itoa(modelW)+"s │ %-7s │ %-6s │ %8s │ %8s │ %6s │ %s │\n",
-		"#",
-		coloredCell("Tier", 6, Bold),
-		"Provider", "Model", "Ctx", "Bench", "Avg", "Lat", "Up%",
-		coloredCell("Verdict", 16, Bold))
-	r.builder.WriteString(Bold)
-	r.builder.WriteString(header)
-	r.builder.WriteString(Reset)
-
-	r.builder.WriteString(SeparatorRow(w - 2))
-	r.builder.WriteString("\n")
-
+	var rows []string
 	visibleRows := opts.Height - 14
 	if visibleRows < 5 {
 		visibleRows = 5
@@ -176,40 +130,43 @@ func (r *Renderer) renderTable(opts *RenderOptions) {
 			bench = fmt.Sprintf("%.2f", m.QualityScore)
 		}
 
-		row := fmt.Sprintf("│ %s%-3d │ %s │ %-13s │ %-"+strconv.Itoa(modelW)+"s │ %-7s │ %-6s │ %8.0f │ %8.0f │ %5.1f%% │ %s │\n",
+		row := fmt.Sprintf("%s %-3d │ %s │ %-13s │ %-34s │ %-7s │ %-6s │ %8s │ %8s │ %6s │ %s │",
 			marker,
 			i+1,
-			coloredCell(m.Tier, 6, TierColor(m.Tier)),
-			truncateStr(m.Provider, 13),
-			truncateStr(m.Label, modelW),
-			truncateStr(m.Context, 7),
+			renderTier(m.Tier),
+			m.Provider,
+			truncateStr(m.Label, 34),
+			m.Context,
 			bench,
-			m.AvgLatency,
-			m.LatestPing,
-			m.Uptime,
-			coloredCell(verdict, 16, verdictColorCode(verdict)))
+			fmt.Sprintf("%.0f", m.AvgLatency),
+			fmt.Sprintf("%.0f", m.LatestPing),
+			fmt.Sprintf("%.1f%%", m.Uptime),
+			renderVerdict(verdict),
+		)
 
 		if !opts.CodingOnly || hasTag(m.Tags, "coding") {
-			r.builder.WriteString(row)
+			rows = append(rows, row)
 		} else {
-			r.builder.WriteString(Dim)
-			r.builder.WriteString(row)
-			r.builder.WriteString(Reset)
+			rows = append(rows, dimStyle.Render(row))
 		}
 	}
 
-	r.builder.WriteString(BorderRowBottom(w - 2))
-	r.builder.WriteString("\n")
+	header := boldText.Render("│ #    │ Tier   │ Provider      │ Model                              │ Ctx    │ Bench  │      Avg │      Lat │    Up% │ Verdict          │")
+	sep := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Render("")
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		header,
+		sep,
+		strings.Join(rows, "\n"),
+	)
 }
 
-func (r *Renderer) renderFooter(opts *RenderOptions) {
-	w := opts.Width
-	if w < 60 {
-		w = 60
+func renderFooter(opts *RenderOptions) string {
+	width := opts.Width
+	if width < 60 {
+		width = 60
 	}
-
-	r.builder.WriteString(SeparatorRow(w - 2))
-	r.builder.WriteString("\n")
 
 	var helpText string
 	if opts.SearchActive {
@@ -217,16 +174,6 @@ func (r *Renderer) renderFooter(opts *RenderOptions) {
 	} else {
 		helpText = " ↑↓/jk:nav  PgUp/PgDn:page  /:search  Enter:configure  A:key  P:settings  ?:help  q:quit"
 	}
-	helpPadding := w - 2 - visualLen(helpText)
-	if helpPadding < 1 {
-		helpPadding = 1
-	}
-	r.builder.WriteString("│")
-	r.builder.WriteString(Dim)
-	r.builder.WriteString(helpText)
-	r.builder.WriteString(Reset)
-	r.builder.WriteString(strings.Repeat(" ", helpPadding))
-	r.builder.WriteString("│\n")
 
 	sortLine := fmt.Sprintf(" sort:%s%s  tier:%s  provider:%s  interval:%dms  codingOnly:%v",
 		opts.SortKey,
@@ -235,48 +182,67 @@ func (r *Renderer) renderFooter(opts *RenderOptions) {
 		opts.ProviderFilter,
 		opts.IntervalMs,
 		opts.CodingOnly)
-	sortPadding := w - 2 - visualLen(sortLine)
-	if sortPadding < 1 {
-		sortPadding = 1
-	}
-	r.builder.WriteString("│")
-	r.builder.WriteString(Dim)
-	r.builder.WriteString(sortLine)
-	r.builder.WriteString(Reset)
-	r.builder.WriteString(strings.Repeat(" ", sortPadding))
-	r.builder.WriteString("│\n")
 
-	r.builder.WriteString(BorderRowBottom(w - 2))
-	r.builder.WriteString("\n")
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		dimStyle.Render("│ " + helpText + " │"),
+		dimStyle.Render("│ " + sortLine + " │"),
+	)
 }
 
-func coloredCell(text string, width int, color string) string {
-	truncated := truncate(text, width)
-	if visualLen(truncated) < width {
-		truncated += strings.Repeat(" ", width-visualLen(truncated))
+func renderTier(tier string) string {
+	switch tier {
+	case "S+", "S":
+		return tierSPlus.Render(tier)
+	case "A+", "A":
+		return tierAPlus.Render(tier)
+	case "A-", "B+":
+		return tierAMinus.Render(tier)
+	case "B":
+		return tierB.Render(tier)
+	default:
+		return tierC.Render(tier)
 	}
-	return color + truncated + Reset
 }
 
-func verdictColorCode(v string) string {
+func renderVerdict(v string) string {
 	switch v {
 	case "Perfect", "Normal":
-		return Green
+		return verdictPerfect.Render(v)
 	case "Slow":
-		return Yellow
+		return verdictSlow.Render(v)
 	case "Very Slow", "Unusable":
-		return Red
+		return verdictVerySlow.Render(v)
 	case "Overloaded":
-		return BrightYellow
+		return verdictOverloaded.Render(v)
 	case "Unstable", "Not Active":
-		return Red
+		return verdictUnstable.Render(v)
 	default:
-		return Dim
+		return verdictPending.Render(v)
 	}
 }
 
-func verdictColor(v string) string {
-	return Color(v, verdictColorCode(v))
+func FilterModels(list []*models.Model, codingOnly bool, tier, provider, query string) []*models.Model {
+	result := make([]*models.Model, 0, len(list))
+	for _, m := range list {
+		if codingOnly && !hasTag(m.Tags, "coding") {
+			continue
+		}
+		if tier != "" && tier != "All" && m.Tier != tier {
+			continue
+		}
+		if provider != "" && provider != "All" && m.Provider != provider {
+			continue
+		}
+		if query != "" {
+			lower := stringsToLower(query)
+			if !containsLower(m.ID, lower) && !containsLower(m.Label, lower) && !containsLower(m.Provider, lower) {
+				continue
+			}
+		}
+		result = append(result, m)
+	}
+	return result
 }
 
 func truncateStr(s string, max int) string {
@@ -292,18 +258,33 @@ func hasTag(tags []string, tag string) bool {
 	return false
 }
 
+func stringsToLower(s string) string {
+	b := []byte(s)
+	for i := 0; i < len(b); i++ {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 32
+		}
+	}
+	return string(b)
+}
+
+func containsLower(s, sub string) bool {
+	return len(s) >= len(sub) && strings.Index(s, sub) >= 0
+}
+
 func RenderSettings(providers []SettingsProvider) string {
 	var b strings.Builder
-	b.WriteString(CursorHome())
-	b.WriteString(Bold + "free-router Settings" + Reset + "\n")
-	b.WriteString(Dim + "  ↑↓:navigate  Enter:edit key  Space:toggle  T:test  D:delete  ESC/Q:back" + Reset + "\n\n")
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render("free-router Settings"))
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("  ↑↓:navigate  Enter:edit key  Space:toggle  T:test  D:delete  ESC/Q:back"))
+	b.WriteString("\n\n")
 
 	for _, p := range providers {
 		state := "[OFF]"
-		color := Dim
+		color := lipgloss.NewStyle().Faint(true)
 		if p.Enabled {
 			state = "[ON]"
-			color = Green
+			color = greenStyle
 		}
 		key := "(no key)"
 		if p.Key != "" {
@@ -314,8 +295,8 @@ func RenderSettings(providers []SettingsProvider) string {
 			status = p.TestStatus
 		}
 		b.WriteString(fmt.Sprintf("  %s %s %-22s %-20s %s\n",
-			Color(state, color),
-			Color(p.Name, BrightCyan),
+			color.Render(state),
+			brightCyan.Render(p.Name),
 			p.Name,
 			key,
 			status))
@@ -339,10 +320,10 @@ func maskKey(key string) string {
 
 func RenderHelp() string {
 	var b strings.Builder
-	b.WriteString(CursorHome())
-	b.WriteString(Bold + "freemodel-router Help" + Reset + "\n\n")
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render("freemodel-router Help"))
+	b.WriteString("\n\n")
 
-	b.WriteString(Bold + "Keyboard Shortcuts\n" + Reset)
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render("Keyboard Shortcuts"))
 	shortcuts := [][2]string{
 		{"↑↓ / j k", "Navigate models"},
 		{"PgUp / PgDn", "Page up/down"},
@@ -364,7 +345,7 @@ func RenderHelp() string {
 		b.WriteString(fmt.Sprintf("  %-24s %s\n", s[0], s[1]))
 	}
 
-	b.WriteString("\n" + Bold + "Sort Columns\n" + Reset)
+	b.WriteString("\n" + boldText.Render("Sort Columns"))
 	cols := [][2]string{
 		{"0", "Priority (default): status → tier → avg → uptime → provider → model"},
 		{"1", "Tier"},
@@ -381,7 +362,7 @@ func RenderHelp() string {
 		b.WriteString(fmt.Sprintf("  %-24s %s\n", c[0], c[1]))
 	}
 
-	b.WriteString("\n" + Bold + "SWE-bench Tiers\n" + Reset)
+	b.WriteString("\n" + boldText.Render("SWE-bench Tiers"))
 	tiers := [][2]string{
 		{"S+", ">= 70% — Elite frontier"},
 		{"S", "60-70% — Excellent"},
@@ -393,10 +374,10 @@ func RenderHelp() string {
 		{"C", "< 20% — Lightweight / edge"},
 	}
 	for _, t := range tiers {
-		b.WriteString(fmt.Sprintf("  %-24s %s\n", Color(t[0], TierColor(t[0])), t[1]))
+		b.WriteString(fmt.Sprintf("  %-24s %s\n", renderTier(t[0]), t[1]))
 	}
 
-	b.WriteString("\n" + Bold + "Verdicts\n" + Reset)
+	b.WriteString("\n" + boldText.Render("Verdicts"))
 	verdicts := [][2]string{
 		{"✓ Perfect", "Avg < 400ms"},
 		{"✓ Normal", "Avg < 1000ms"},

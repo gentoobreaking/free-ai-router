@@ -163,12 +163,7 @@ func runTUI(opts *cli.Options) error {
 
 	applyRouterConfig(registry, cfg, opts)
 
-	t := tui.New(&tui.Config{
-		ScrollSortPauseMs: cfg.UI.ScrollSortPauseMs,
-	})
-	t.SetRegistry(registry)
-	t.SetConfig(cfg)
-	return t.Run()
+	return tui.Run(registry, cfg)
 }
 
 func runServer(opts *cli.Options) error {
