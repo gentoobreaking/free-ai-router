@@ -44,6 +44,10 @@ type Model struct {
 	paused          bool
 	pauseUntil      time.Time
 	pauseMs         time.Duration
+
+	// First-run wizard state
+	wizardActive bool
+	wizard       *WizardModel
 }
 
 func NewModel() *Model {
@@ -77,6 +81,36 @@ func (m *Model) Init() tea.Cmd {
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Delegate to wizard when active
+	if m.wizardActive && m.wizard != nil {
+		wm, cmd := m.wizard.Update(msg)
+		newWiz := wm.(*WizardModel)
+		m.wizard = newWiz
+		if newWiz.step == WizDone {
+			// Wizard finished — apply collected keys to config
+			for provider, key := range newWiz.collected {
+				if m.cfg != nil {
+					m.cfg.APIKeys[provider] = key
+					pcfg := m.cfg.Providers[provider]
+					pcfg.Enabled = true
+					m.cfg.Providers[provider] = pcfg
+				}
+			}
+			if len(newWiz.collected) > 0 && m.cfg != nil {
+				_ = config.Save(m.cfg)
+			}
+			m.wizardActive = false
+			m.wizard = nil
+		}
+		if newWiz.quit {
+			m.wizardActive = false
+			m.wizard = nil
+			m.quit = true
+			return m, tea.Quit
+		}
+		return m, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -109,8 +143,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) View() string {
-	if m.registry == nil {
+	if m.registry == nil && !m.wizardActive {
 		return lipgloss.NewStyle().Align(lipgloss.Center).Render("Loading...")
+	}
+
+	if m.wizardActive && m.wizard != nil {
+		return m.wizard.View()
 	}
 
 	if m.showHelp {
@@ -385,6 +423,12 @@ func Run(registry *models.Registry, cfg *config.Config) error {
 	m := NewModel()
 	m.SetRegistry(registry)
 	m.SetConfig(cfg)
+
+	if isFirstRun(cfg) {
+		m.wizard = NewWizardModel(cfg)
+		m.wizardActive = true
+	}
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
