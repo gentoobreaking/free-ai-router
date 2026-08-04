@@ -268,9 +268,10 @@ freemodel-router (Go binary)
          └────────────┘            └─────────────┘
 ```
 
-**Key properties preserved from ClawLabsAI/free-ai-models:**
-- **即時性 (Real-time)**: OpenRouter API polled at startup for current free models
-- **免去多方註冊 (No multi-party registration)**: OpenRouter catalog and Pollinations AI require no API keys
+**免去多方註冊 (No multi-party registration)**:
+- **Pollinations AI**: truly no API key — unlimited free access, no auth
+- **OpenRouter catalog**: no key needed for model discovery (pricing filtering)
+- **Chinese providers**: configure ONE `NEW_API_API_KEY` to access aggregated Baidu/Alibaba/Tencent/SiliconFlow models via a new-api gateway, instead of registering with each provider individually
 
 ## License
 
