@@ -79,6 +79,8 @@ var EnvOverrides = []EnvOverride{
 	{Provider: "scaleway", EnvVar: "SCALEWAY_API_KEY"},
 	{Provider: "kilocode", EnvVar: "KILOCODE_API_KEY"},
 	{Provider: "googleai", EnvVar: "GOOGLE_API_KEY"},
+	{Provider: "new-api", EnvVar: "NEW_API_API_KEY"},
+	{Provider: "siliconflow", EnvVar: "SILICONFLOW_API_KEY"},
 }
 
 func DefaultConfig() *Config {

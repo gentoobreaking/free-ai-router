@@ -2,6 +2,7 @@ package providers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -123,8 +124,8 @@ func (m *Manager) fetchFreeOpenRouterModels() map[string]bool {
 
 	var result struct {
 		Data []struct {
-			ID       string `json:"id"`
-			Pricing  struct {
+			ID      string `json:"id"`
+			Pricing struct {
 				Prompt     string `json:"prompt"`
 				Completion string `json:"completion"`
 			} `json:"pricing"`
@@ -317,6 +318,8 @@ func EnvVarForProvider(provider string) string {
 		"scaleway":          "SCALEWAY_API_KEY",
 		"kilocode":          "KILOCODE_API_KEY",
 		"googleai":          "GOOGLE_API_KEY",
+		"new-api":           "NEW_API_API_KEY",
+		"siliconflow":       "SILICONFLOW_API_KEY",
 	}
 
 	if env, ok := envMap[provider]; ok {
@@ -326,6 +329,63 @@ func EnvVarForProvider(provider string) string {
 	}
 
 	return ""
+}
+
+// EnvVarForNewAPI returns the env var name for a new-api instance.
+// new-api instances are configured via NEW_API_API_KEY or NEW_API_BASE_URL.
+func EnvVarForNewAPI() string {
+	return "NEW_API_API_KEY"
+}
+
+// DiscoverNewApiModels fetches models from a new-api instance.
+// new-api implements the OpenAI-compatible /v1/models endpoint.
+func DiscoverNewApiModels(baseURL string) ([]ModelEntry, error) {
+	discoveryURL := baseURL + "/v1/models"
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(discoveryURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("new-api returned %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Data []struct {
+			ID         string `json:"id"`
+			OwnedByID  string `json:"owned_by"`
+			Permission []struct {
+				ID string `json:"id"`
+			} `json:"permission"`
+			ContextLength int `json:"context_length"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	var models []ModelEntry
+	for _, d := range result.Data {
+		id := d.ID
+		if id == "" {
+			continue
+		}
+		context := ""
+		if d.ContextLength > 0 {
+			context = fmt.Sprintf("%dk", d.ContextLength/1000)
+		}
+		models = append(models, ModelEntry{
+			ID:      id,
+			Label:   id,
+			Context: context,
+		})
+	}
+
+	return models, nil
 }
 
 // DataDir resolves the directory containing the data/ folder:

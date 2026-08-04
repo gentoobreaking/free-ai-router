@@ -10,36 +10,36 @@ import (
 )
 
 var (
-	headerStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62")).Padding(0, 1)
-	tableStyle     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
-	footerStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
-	titleStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("208"))
-	dimStyle       = lipgloss.NewStyle().Faint(true)
-	cyanStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
-	greenStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
-	yellowStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
-	redStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	brightGreen    = lipgloss.NewStyle().Foreground(lipgloss.Color("84"))
-	brightCyan     = lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
-	tierSPlus      = lipgloss.NewStyle().Foreground(lipgloss.Color("84"))
-	tierS          = lipgloss.NewStyle().Foreground(lipgloss.Color("84"))
-	tierAPlus      = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
-	tierA          = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
-	tierAMinus     = lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
-	tierBPlus      = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
-	tierB          = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
-	tierC          = lipgloss.NewStyle().Faint(true)
-	verdictPerfect = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
-	verdictNormal  = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
-	verdictSlow    = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
-	verdictVerySlow = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	verdictUnusable = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	headerStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62")).Padding(0, 1)
+	tableStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	footerStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("208"))
+	dimStyle          = lipgloss.NewStyle().Faint(true)
+	cyanStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
+	greenStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	yellowStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	redStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	brightGreen       = lipgloss.NewStyle().Foreground(lipgloss.Color("84"))
+	brightCyan        = lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
+	tierSPlus         = lipgloss.NewStyle().Foreground(lipgloss.Color("84"))
+	tierS             = lipgloss.NewStyle().Foreground(lipgloss.Color("84"))
+	tierAPlus         = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	tierA             = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	tierAMinus        = lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
+	tierBPlus         = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	tierB             = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	tierC             = lipgloss.NewStyle().Faint(true)
+	verdictPerfect    = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	verdictNormal     = lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	verdictSlow       = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	verdictVerySlow   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	verdictUnusable   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	verdictOverloaded = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
-	verdictUnstable = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	verdictNotActive = lipgloss.NewStyle().Faint(true)
-	verdictPending = lipgloss.NewStyle().Faint(true)
-	dimText        = lipgloss.NewStyle().Faint(true)
-	boldText       = lipgloss.NewStyle().Bold(true)
+	verdictUnstable   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	verdictNotActive  = lipgloss.NewStyle().Faint(true)
+	verdictPending    = lipgloss.NewStyle().Faint(true)
+	dimText           = lipgloss.NewStyle().Faint(true)
+	boldText          = lipgloss.NewStyle().Bold(true)
 )
 
 type RenderOptions struct {
@@ -185,8 +185,8 @@ func renderFooter(opts *RenderOptions) string {
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		dimStyle.Render("│ " + helpText + " │"),
-		dimStyle.Render("│ " + sortLine + " │"),
+		dimStyle.Render("│ "+helpText+" │"),
+		dimStyle.Render("│ "+sortLine+" │"),
 	)
 }
 

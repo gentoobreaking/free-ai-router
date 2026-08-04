@@ -17,33 +17,33 @@ import (
 const defaultScrollSortPause = 1500 * time.Millisecond
 
 type Model struct {
-	registry    *models.Registry
-	cfg         *config.Config
-	engine      *ping.Engine
-	width       int
-	height      int
-	selected    int
-	searchQuery string
-	searchActive bool
-	sortKey     string
-	sortReverse bool
-	tierFilter  string
-	providerFilter string
-	codingOnly  bool
-	intervalMs  int
-	showSettings bool
-	settingsIndex int
+	registry        *models.Registry
+	cfg             *config.Config
+	engine          *ping.Engine
+	width           int
+	height          int
+	selected        int
+	searchQuery     string
+	searchActive    bool
+	sortKey         string
+	sortReverse     bool
+	tierFilter      string
+	providerFilter  string
+	codingOnly      bool
+	intervalMs      int
+	showSettings    bool
+	settingsIndex   int
 	settingsKeyEdit bool
-	settingsKeyBuf string
-	showHelp    bool
-	pickerOpen  bool
-	pickerIndex int
-	pickerMsg   string
-	pickerTargets []targets.Target
-	quit        bool
-	paused      bool
-	pauseUntil  time.Time
-	pauseMs     time.Duration
+	settingsKeyBuf  string
+	showHelp        bool
+	pickerOpen      bool
+	pickerIndex     int
+	pickerMsg       string
+	pickerTargets   []targets.Target
+	quit            bool
+	paused          bool
+	pauseUntil      time.Time
+	pauseMs         time.Duration
 }
 
 func NewModel() *Model {
