@@ -252,8 +252,8 @@ func (r *Renderer) renderFooter(opts *RenderOptions) {
 
 func coloredCell(text string, width int, color string) string {
 	truncated := truncate(text, width)
-	if len(truncated) < width {
-		truncated += strings.Repeat(" ", width-len(truncated))
+	if visualLen(truncated) < width {
+		truncated += strings.Repeat(" ", width-visualLen(truncated))
 	}
 	return color + truncated + Reset
 }
