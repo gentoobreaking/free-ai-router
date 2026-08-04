@@ -35,6 +35,7 @@ func NewRenderer() *Renderer {
 
 func (r *Renderer) Render(opts *RenderOptions) string {
 	r.builder.Reset()
+	r.builder.WriteString(ClearScreen())
 	r.builder.WriteString(CursorHome())
 
 	r.renderHeader(opts)
@@ -186,7 +187,7 @@ func (r *Renderer) renderTable(opts *RenderOptions) {
 			m.AvgLatency,
 			m.LatestPing,
 			m.Uptime,
-			coloredCell(verdict, 16, verdictColor(verdict)))
+			coloredCell(verdict, 16, verdictColorCode(verdict)))
 
 		if !opts.CodingOnly || hasTag(m.Tags, "coding") {
 			r.builder.WriteString(row)
@@ -257,21 +258,25 @@ func coloredCell(text string, width int, color string) string {
 	return color + truncated + Reset
 }
 
-func verdictColor(v string) string {
+func verdictColorCode(v string) string {
 	switch v {
 	case "Perfect", "Normal":
-		return Color(v, Green)
+		return Green
 	case "Slow":
-		return Color(v, Yellow)
+		return Yellow
 	case "Very Slow", "Unusable":
-		return Color(v, Red)
+		return Red
 	case "Overloaded":
-		return Color(v, BrightYellow)
+		return BrightYellow
 	case "Unstable", "Not Active":
-		return Color(v, Red)
+		return Red
 	default:
-		return Color(v, Dim)
+		return Dim
 	}
+}
+
+func verdictColor(v string) string {
+	return Color(v, verdictColorCode(v))
 }
 
 func truncateStr(s string, max int) string {
