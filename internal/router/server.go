@@ -20,7 +20,6 @@ import (
 const DefaultPort = 7352
 
 type Server struct {
-	mu        sync.RWMutex
 	registry  *models.Registry
 	cfg       interface{}
 	port      int
@@ -29,7 +28,17 @@ type Server struct {
 	logger    *Logger
 	handler   http.Handler
 	providers *providers.Manager
+	engine    *ping.Engine
+
+	updateMu        sync.Mutex
+	updateCheck     func() (string, error)
+	updateChecking  bool
+	updateLastCheck time.Time
+	updateAvailable bool
+	updateURL       string
 }
+
+const updateCheckTTL = 30 * time.Minute
 
 func NewServer(registry *models.Registry, cfg interface{}, port int, version string, logEnabled bool) *Server {
 	s := &Server{
@@ -58,6 +67,17 @@ func (s *Server) SetPool(pool *ping.TransportPool) {
 // SetProviders wires the provider source manager used by discovery endpoints.
 func (s *Server) SetProviders(mgr *providers.Manager) {
 	s.providers = mgr
+}
+
+// SetEngine wires the ping engine so /api/auto-ping can start/stop it.
+func (s *Server) SetEngine(engine *ping.Engine) {
+	s.engine = engine
+}
+
+// SetUpdateChecker wires the update check (cli.CheckForUpdate); results are
+// cached with a TTL so /api/meta never blocks on repeated network calls.
+func (s *Server) SetUpdateChecker(fn func() (string, error)) {
+	s.updateCheck = fn
 }
 
 func (s *Server) Handler() http.Handler {
@@ -164,7 +184,21 @@ func (s *Server) handleAPIModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPIConfigGet(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.cfg)
+	cfg, ok := s.cfg.(*config.Config)
+	if !ok || cfg == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{})
+		return
+	}
+	cfg.RLock()
+	data, err := json.Marshal(cfg)
+	cfg.RUnlock()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
 }
 
 func (s *Server) handleAPIConfigPost(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +221,7 @@ func (s *Server) applyConfigPayload(payload map[string]interface{}) error {
 	if !ok || cfg == nil {
 		return fmt.Errorf("config not available")
 	}
+	cfg.Lock()
 	if v, ok := payload["apiKeys"]; ok {
 		if keys, ok := v.(map[string]interface{}); ok {
 			cfg.APIKeys = keys
@@ -224,14 +259,53 @@ func (s *Server) applyConfigPayload(payload map[string]interface{}) error {
 			cfg.ExcludedProviders = excluded
 		}
 	}
+	cfg.Unlock()
 	return config.Save(cfg)
 }
 
 func (s *Server) handleAPIMeta(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	updateAvailable, updateURL := s.maybeCheckUpdate()
+	resp := map[string]interface{}{
 		"version":         s.version,
-		"updateAvailable": false,
-	})
+		"updateAvailable": updateAvailable,
+	}
+	if updateAvailable {
+		resp["updateUrl"] = updateURL
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// maybeCheckUpdate runs the update checker at most every updateCheckTTL with
+// singleflight; failures degrade to "no update" instead of erroring.
+func (s *Server) maybeCheckUpdate() (bool, string) {
+	s.updateMu.Lock()
+	if s.updateCheck == nil {
+		s.updateMu.Unlock()
+		return false, ""
+	}
+	if time.Since(s.updateLastCheck) < updateCheckTTL || s.updateChecking {
+		available, url := s.updateAvailable, s.updateURL
+		s.updateMu.Unlock()
+		return available, url
+	}
+	s.updateChecking = true
+	s.updateMu.Unlock()
+
+	url, err := s.updateCheck()
+
+	s.updateMu.Lock()
+	s.updateChecking = false
+	s.updateLastCheck = time.Now()
+	if err != nil {
+		s.updateAvailable = false
+		s.updateURL = ""
+	} else {
+		s.updateAvailable = url != ""
+		s.updateURL = url
+	}
+	available, out := s.updateAvailable, s.updateURL
+	s.updateMu.Unlock()
+	return available, out
 }
 
 func (s *Server) handleAPIPinnedGet(w http.ResponseWriter, r *http.Request) {
@@ -258,19 +332,35 @@ func (s *Server) handleAPIAutoPingGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"autoPing": true})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"autoPing": cfg.AutoPingEnabled})
+	cfg.RLock()
+	autoPing := cfg.AutoPingEnabled
+	cfg.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]interface{}{"autoPing": autoPing})
 }
 
+// handleAPIAutoPingPost persists the toggle and starts/stops the ping engine.
 func (s *Server) handleAPIAutoPingPost(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		AutoPing *bool `json:"autoPing"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&payload)
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	if cfg, ok := s.cfg.(*config.Config); ok && cfg != nil && payload.AutoPing != nil {
+		cfg.Lock()
 		cfg.AutoPingEnabled = *payload.AutoPing
+		cfg.Unlock()
 		if err := config.Save(cfg); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
+		}
+		if s.engine != nil {
+			if *payload.AutoPing {
+				s.engine.Start()
+			} else {
+				s.engine.Stop()
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -469,7 +559,7 @@ func (s *Server) handleAPIConfigImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cfg, ok := s.cfg.(*config.Config); ok {
-		*cfg = *imported
+		cfg.ReplaceWith(imported)
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -504,6 +594,7 @@ func (s *Server) handleAPIAccountStatus(w http.ResponseWriter, r *http.Request) 
 			names = append(names, n)
 		}
 	}
+	cfg.RLock()
 	for name := range cfg.Providers {
 		addName(name)
 	}
@@ -519,6 +610,7 @@ func (s *Server) handleAPIAccountStatus(w http.ResponseWriter, r *http.Request) 
 			"enabled":  pcfg.Enabled,
 		})
 	}
+	cfg.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]interface{}{"accounts": accounts})
 }
 
@@ -528,11 +620,14 @@ func (s *Server) handleAPIAutoUpdateGet(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]interface{}{"enabled": true, "intervalHours": 24})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	cfg.RLock()
+	resp := map[string]interface{}{
 		"enabled":       cfg.AutoUpdate.Enabled,
 		"intervalHours": cfg.AutoUpdate.IntervalHours,
 		"lastCheckAt":   cfg.AutoUpdate.LastCheckAt,
-	})
+	}
+	cfg.RUnlock()
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleAPIAutoUpdatePost(w http.ResponseWriter, r *http.Request) {
@@ -549,12 +644,14 @@ func (s *Server) handleAPIAutoUpdatePost(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config not available"})
 		return
 	}
+	cfg.Lock()
 	if payload.Enabled != nil {
 		cfg.AutoUpdate.Enabled = *payload.Enabled
 	}
 	if payload.IntervalHours != nil && *payload.IntervalHours > 0 {
 		cfg.AutoUpdate.IntervalHours = *payload.IntervalHours
 	}
+	cfg.Unlock()
 	if err := config.Save(cfg); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -590,10 +687,13 @@ func (s *Server) handleAPIFilterRulesGet(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, map[string]interface{}{"minSweScore": nil, "excludedProviders": []string{}})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	cfg.RLock()
+	resp := map[string]interface{}{
 		"minSweScore":       cfg.MinSweScore,
 		"excludedProviders": cfg.ExcludedProviders,
-	})
+	}
+	cfg.RUnlock()
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleAPIFilterRulesPost(w http.ResponseWriter, r *http.Request) {
@@ -610,12 +710,14 @@ func (s *Server) handleAPIFilterRulesPost(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config not available"})
 		return
 	}
+	cfg.Lock()
 	if payload.MinSweScore != nil {
 		cfg.MinSweScore = payload.MinSweScore
 	}
 	if payload.ExcludedProviders != nil {
 		cfg.ExcludedProviders = *payload.ExcludedProviders
 	}
+	cfg.Unlock()
 	if err := config.Save(cfg); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

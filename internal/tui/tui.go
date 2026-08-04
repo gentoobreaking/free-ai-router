@@ -111,7 +111,9 @@ func (t *TUI) Run() error {
 
 	t.input.Start()
 	t.engine.SetModels(t.registry.GetAll())
-	t.engine.Start()
+	if t.cfg == nil || t.cfg.AutoPingEnabled {
+		t.engine.Start()
+	}
 
 	tick := time.NewTicker(33 * time.Millisecond)
 	defer tick.Stop()
@@ -120,8 +122,8 @@ func (t *TUI) Run() error {
 		select {
 		case ev := <-t.input.Channel():
 			t.handleInput(ev)
-		case <-sigCh:
-			t.quit = true
+		case sig := <-sigCh:
+			t.handleSignal(sig)
 		case <-tick.C:
 			t.tick()
 		}
@@ -129,6 +131,16 @@ func (t *TUI) Run() error {
 
 	t.engine.Stop()
 	return nil
+}
+
+// handleSignal dispatches process signals: SIGWINCH resizes the terminal
+// view; everything else (SIGINT/SIGTERM) quits the TUI.
+func (t *TUI) handleSignal(sig os.Signal) {
+	if sig == syscall.SIGWINCH {
+		t.resize()
+		return
+	}
+	t.quit = true
 }
 
 func (t *TUI) resize() {

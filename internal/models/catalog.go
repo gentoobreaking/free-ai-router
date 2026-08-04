@@ -200,14 +200,6 @@ func (r *Registry) LoadFromSources(mgr *providers.Manager) {
 	r.ReplaceAll(result)
 }
 
-func canonicalizeID(id string, aliases map[string]string) string {
-	short := strings.TrimPrefix(id, "openrouter/")
-	if canonical, ok := aliases[short]; ok {
-		return canonical
-	}
-	return short
-}
-
 func ComputeTier(score float64) string {
 	switch {
 	case score >= 0.70:
@@ -261,17 +253,6 @@ func ResolveGroup(id string) string {
 	return id
 }
 
-func FindByGroup(registry *Registry, group string) []*Model {
-	all := registry.GetAll()
-	var result []*Model
-	for _, m := range all {
-		if ResolveGroup(m.ID) == group {
-			result = append(result, m)
-		}
-	}
-	return result
-}
-
 func SortModels(list []*Model, sortKey string, reverse bool) {
 	less := func(i, j int) bool {
 		mi, mj := list[i], list[j]
@@ -319,48 +300,6 @@ func parseContextValue(s string) float64 {
 		}
 	}
 	return val
-}
-
-func FilterByTier(models []*Model, tier string) []*Model {
-	if tier == "" || tier == "All" {
-		return models
-	}
-	var result []*Model
-	for _, m := range models {
-		if m.Tier == tier {
-			result = append(result, m)
-		}
-	}
-	return result
-}
-
-func FilterByProvider(models []*Model, provider string) []*Model {
-	if provider == "" || provider == "All" {
-		return models
-	}
-	var result []*Model
-	for _, m := range models {
-		if m.Provider == provider {
-			result = append(result, m)
-		}
-	}
-	return result
-}
-
-func FilterBySearch(models []*Model, query string) []*Model {
-	if query == "" {
-		return models
-	}
-	query = strings.ToLower(query)
-	var result []*Model
-	for _, m := range models {
-		if strings.Contains(strings.ToLower(m.ID), query) ||
-			strings.Contains(strings.ToLower(m.Label), query) ||
-			strings.Contains(strings.ToLower(m.Provider), query) {
-			result = append(result, m)
-		}
-	}
-	return result
 }
 
 func FindBestModel(models []*Model) *Model {

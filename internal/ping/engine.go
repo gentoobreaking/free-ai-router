@@ -149,6 +149,13 @@ func (e *Engine) Stop() {
 	}
 }
 
+// Running reports whether the engine loop is currently active.
+func (e *Engine) Running() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.running
+}
+
 func (e *Engine) Start() {
 	e.mu.Lock()
 	if e.running {
@@ -195,7 +202,7 @@ func (e *Engine) PingAllOnce(initial bool) {
 	work := make(chan *models.Model)
 	go func() {
 		for _, m := range modelsCopy {
-			if shouldSkip(m) {
+			if e.shouldSkipLocked(m) {
 				e.markSkipped(m)
 				continue
 			}
@@ -248,6 +255,24 @@ func shouldSkip(m *models.Model) bool {
 		return false
 	}
 	return m.SkippedRounds < skipRoundsFor(m.FailStreak)
+}
+
+// shouldSkipLocked reads the skip state under the registry read lock when a
+// registry is set, so the scheduler never races ping workers that write
+// FailStreak/SkippedRounds under the registry write lock.
+func (e *Engine) shouldSkipLocked(m *models.Model) bool {
+	e.mu.RLock()
+	registry := e.registry
+	e.mu.RUnlock()
+
+	if registry != nil {
+		skipped := false
+		registry.WithModel(m.ID, func(x *models.Model) {
+			skipped = shouldSkip(x)
+		})
+		return skipped
+	}
+	return shouldSkip(m)
 }
 
 // markSkipped advances the skipped-round counter under the registry lock.

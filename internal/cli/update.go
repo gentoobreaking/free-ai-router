@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,13 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/freemodel/router/internal/config"
 )
-
-const updateCheckInterval = 24 * time.Hour
 
 type releaseInfo struct {
 	TagName string `json:"tag_name"`
@@ -30,7 +31,7 @@ func CheckForUpdate(force bool) (string, error) {
 		return tarball, nil
 	}
 
-	resp, err := http.Get("https://api.github.com/repos/freemodel/router/releases/latest")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get("https://api.github.com/repos/freemodel/router/releases/latest")
 	if err != nil {
 		return "", fmt.Errorf("failed to check for updates: %w", err)
 	}
@@ -45,14 +46,43 @@ func CheckForUpdate(force bool) (string, error) {
 		return "", fmt.Errorf("failed to parse release info: %w", err)
 	}
 
-	current := strings.TrimPrefix(Version, "v")
-	latest := strings.TrimPrefix(rel.TagName, "v")
-
-	if latest == current {
+	if !versionNewer(rel.TagName, Version) {
 		return "", nil
 	}
 
 	return rel.HTMLURL, nil
+}
+
+// parseSemver parses "vMAJOR.MINOR.PATCH" (missing parts become 0).
+func parseSemver(v string) (int, int, int) {
+	parts := strings.SplitN(strings.TrimPrefix(strings.TrimSpace(v), "v"), ".", 3)
+	nums := make([]int, 3)
+	for i := 0; i < len(parts) && i < 3; i++ {
+		nums[i], _ = strconv.Atoi(parts[i])
+	}
+	return nums[0], nums[1], nums[2]
+}
+
+// versionNewer reports whether latest is strictly newer than current.
+func versionNewer(latest, current string) bool {
+	lm, lMi, lp := parseSemver(latest)
+	cm, cMi, cp := parseSemver(current)
+	if lm != cm {
+		return lm > cm
+	}
+	if lMi != cMi {
+		return lMi > cMi
+	}
+	return lp > cp
+}
+
+func sha256Of(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func RunUpdate() error {
@@ -167,6 +197,20 @@ func applyUpdate(source string) error {
 		return fmt.Errorf("failed to download update: %w", err)
 	}
 
+	// Integrity check: verify against FREMODEL_UPDATE_SHA256 when provided,
+	// otherwise print the computed hash for out-of-band verification.
+	if expected := os.Getenv("FREMODEL_UPDATE_SHA256"); expected != "" {
+		sum, err := sha256Of(archivePath)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(expected, sum) {
+			return fmt.Errorf("sha256 mismatch: expected %s, got %s", expected, sum)
+		}
+	} else if sum, err := sha256Of(archivePath); err == nil {
+		fmt.Println("Downloaded archive sha256:", sum)
+	}
+
 	binary, err := extractBinary(archivePath, tmpDir)
 	if err != nil {
 		return fmt.Errorf("failed to extract update: %w", err)
@@ -222,7 +266,7 @@ func assetName() string {
 }
 
 func downloadFile(url, path string) error {
-	resp, err := http.Get(url)
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Get(url)
 	if err != nil {
 		return err
 	}

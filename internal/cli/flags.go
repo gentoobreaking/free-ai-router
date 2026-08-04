@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -207,21 +208,22 @@ func PrintVersion() {
 	fmt.Println("freemodel version " + Version)
 }
 
-func EnvConfigPath() string {
-	if p := os.Getenv("FREMODEL_CONFIG_PATH"); p != "" {
-		return p
-	}
-	return ""
-}
-
+// loadVersion reads the VERSION file next to the executable first (installed
+// layout), then the CWD (source/dev layout), falling back to the default.
 func loadVersion() string {
-	data, err := os.ReadFile("VERSION")
-	if err != nil {
-		return defaultVersion
+	candidates := []string{"VERSION"}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append([]string{filepath.Join(filepath.Dir(exe), "VERSION")}, candidates...)
 	}
-	v := strings.TrimSpace(string(data))
-	if v == "" {
-		return defaultVersion
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		v := strings.TrimSpace(string(data))
+		if v != "" {
+			return v
+		}
 	}
-	return v
+	return defaultVersion
 }

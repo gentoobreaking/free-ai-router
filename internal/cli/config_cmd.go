@@ -109,7 +109,7 @@ func configAddKey(provider, key string) error {
 		return err
 	}
 
-	keys := config.ResolveAPIKeys(provider, cfg)
+	keys := config.KeysFromConfig(provider, cfg)
 	if len(keys) == 1 && !keyExists(keys, key) {
 		keys = append([]string{keys[0]}, key)
 	} else if !keyExists(keys, key) {
@@ -139,7 +139,7 @@ func configRemoveKey(provider, keyOrIndex string) error {
 		return err
 	}
 
-	keys := config.ResolveAPIKeys(provider, cfg)
+	keys := config.KeysFromConfig(provider, cfg)
 	if len(keys) == 0 {
 		return fmt.Errorf("no keys configured for %s", provider)
 	}

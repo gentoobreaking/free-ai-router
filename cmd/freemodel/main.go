@@ -194,7 +194,9 @@ func runServer(opts *cli.Options) error {
 	engine.SetRegistry(registry)
 	engine.SetPool(pool)
 	engine.SetModels(registry.GetAll())
-	engine.Start()
+	if cfg.AutoPingEnabled {
+		engine.Start()
+	}
 	defer engine.Stop()
 
 	port := config.GetPort(opts.Port)
@@ -203,6 +205,8 @@ func runServer(opts *cli.Options) error {
 	srv := router.NewServer(registry, cfg, port, cli.Version, logEnabled)
 	srv.SetPool(pool)
 	srv.SetProviders(provMgr)
+	srv.SetEngine(engine)
+	srv.SetUpdateChecker(func() (string, error) { return cli.CheckForUpdate(false) })
 
 	log.Printf("freemodel router listening on 127.0.0.1:%d", port)
 	return srv.Start()

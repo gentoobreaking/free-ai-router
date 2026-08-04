@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,7 @@ const LegacyConfigFileName = ".free-router.json"
 const EnvConfigPathVar = "FREMODEL_CONFIG_PATH"
 
 type Config struct {
+	mu                sync.RWMutex
 	APIKeys           map[string]interface{}    `json:"apiKeys"`
 	Providers         map[string]ProviderConfig `json:"providers"`
 	BannedModels      []string                  `json:"bannedModels"`
@@ -28,6 +30,13 @@ type Config struct {
 	CodingOnly        bool                      `json:"codingOnly"`
 	UI                UIConfig                  `json:"ui"`
 }
+
+// Lock/Unlock guard mutation of the config; RLock/RUnlock guard reads. Used
+// by the router API handlers which may touch the shared config concurrently.
+func (c *Config) Lock()    { c.mu.Lock() }
+func (c *Config) Unlock()  { c.mu.Unlock() }
+func (c *Config) RLock()   { c.mu.RLock() }
+func (c *Config) RUnlock() { c.mu.RUnlock() }
 
 type ProviderConfig struct {
 	Enabled        bool   `json:"enabled"`
@@ -153,6 +162,27 @@ func GetPort(defaultPort int) int {
 	return defaultPort
 }
 
+// ReplaceWith copies all fields from other into c (under lock). Used to swap
+// in an imported config without copying the mutex.
+func (c *Config) ReplaceWith(other *Config) {
+	if other == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.APIKeys = other.APIKeys
+	c.Providers = other.Providers
+	c.BannedModels = other.BannedModels
+	c.AutoUpdate = other.AutoUpdate
+	c.MinSweScore = other.MinSweScore
+	c.ExcludedProviders = other.ExcludedProviders
+	c.PinningMode = other.PinningMode
+	c.ModelTags = other.ModelTags
+	c.AutoPingEnabled = other.AutoPingEnabled
+	c.CodingOnly = other.CodingOnly
+	c.UI = other.UI
+}
+
 func Save(cfg *Config) error {
 	path, err := ConfigPath()
 	if err != nil {
@@ -167,7 +197,9 @@ func saveTo(path string, cfg *Config) error {
 		return err
 	}
 
+	cfg.RLock()
 	data, err := json.MarshalIndent(cfg, "", "  ")
+	cfg.RUnlock()
 	if err != nil {
 		return err
 	}
@@ -242,6 +274,31 @@ func ResolveAPIKeys(provider string, cfg *Config) []string {
 		}
 	}
 
+	keys, ok := cfg.APIKeys[provider]
+	if !ok {
+		return nil
+	}
+
+	switch v := keys.(type) {
+	case string:
+		return []string{v}
+	case []interface{}:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+
+	return nil
+}
+
+// KeysFromConfig returns the keys stored in the config file for a provider,
+// ignoring env overrides (used by key-editing CLI commands so env-configured
+// providers are never written back into the config).
+func KeysFromConfig(provider string, cfg *Config) []string {
 	keys, ok := cfg.APIKeys[provider]
 	if !ok {
 		return nil

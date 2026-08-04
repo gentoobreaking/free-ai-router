@@ -69,16 +69,6 @@ func TestResolveGroup(t *testing.T) {
 	}
 }
 
-func TestCanonicalizeID(t *testing.T) {
-	aliases := map[string]string{"kimi-k2.5": "moonshotai/kimi-k2.5"}
-	if got := canonicalizeID("kimi-k2.5", aliases); got != "moonshotai/kimi-k2.5" {
-		t.Errorf("canonicalize should resolve alias, got %s", got)
-	}
-	if got := canonicalizeID("openrouter/unknown", aliases); got != "unknown" {
-		t.Errorf("unknown id should be returned as-is, got %s", got)
-	}
-}
-
 func TestQualityScoreHierarchy(t *testing.T) {
 	offline := map[string]float64{"model/a": 0.5}
 
@@ -139,9 +129,14 @@ func TestFindByGroup(t *testing.T) {
 	r.Add(&Model{ID: "openrouter/deepseek/deepseek-v3.2", Provider: "openrouter"})
 	r.Add(&Model{ID: "groq/llama-3.3-70b-versatile", Provider: "groq"})
 
-	group := FindByGroup(r, "deepseek-v3.2")
-	if len(group) != 2 {
-		t.Fatalf("expected 2 models in group, got %d", len(group))
+	group := 0
+	for _, m := range r.GetAll() {
+		if ResolveGroup(m.ID) == "deepseek-v3.2" {
+			group++
+		}
+	}
+	if group != 2 {
+		t.Fatalf("expected 2 models in group, got %d", group)
 	}
 }
 
@@ -159,29 +154,6 @@ func TestSortModelsByAvg(t *testing.T) {
 	SortModels(list, "avg", true)
 	if list[0].ID != "a" || list[2].ID != "b" {
 		t.Error("avg sort reverse should order descending")
-	}
-}
-
-func TestFilterByTier(t *testing.T) {
-	models := []*Model{
-		{ID: "a", Tier: "S+"},
-		{ID: "b", Tier: "A+"},
-		{ID: "c", Tier: "S+"},
-	}
-	result := FilterByTier(models, "S+")
-	if len(result) != 2 {
-		t.Fatalf("expected 2 S+ models, got %d", len(result))
-	}
-}
-
-func TestFilterBySearch(t *testing.T) {
-	models := []*Model{
-		{ID: "nvidia/deepseek-v3", Label: "DeepSeek V3"},
-		{ID: "groq/llama", Label: "Llama 3"},
-	}
-	result := FilterBySearch(models, "deepseek")
-	if len(result) != 1 {
-		t.Fatalf("expected 1 match, got %d", len(result))
 	}
 }
 

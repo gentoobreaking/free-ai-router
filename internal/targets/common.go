@@ -2,7 +2,6 @@ package targets
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,15 +72,4 @@ func IsInstalled(binary string) bool {
 	}
 	_, err := exec.LookPath(binary)
 	return err == nil
-}
-
-func FallbackModel() string {
-	return "deepseek-ai/deepseek-v4-pro"
-}
-
-func PromptAddKey() bool {
-	fmt.Print("Add API key now? (Y/n, default: Y): ")
-	var answer string
-	_, _ = fmt.Scanln(&answer)
-	return answer == "" || answer == "y" || answer == "Y" || answer == "yes"
 }

@@ -155,7 +155,7 @@ func TestBackupIfExists(t *testing.T) {
 }
 
 func TestFallbackModel(t *testing.T) {
-	if FallbackModel() != "deepseek-ai/deepseek-v4-pro" {
-		t.Errorf("fallback model should be deepseek-ai/deepseek-v4-pro, got %s", FallbackModel())
+	if IsInstalled("this-binary-surely-does-not-exist-xyz") {
+		t.Error("IsInstalled should be false for a missing binary")
 	}
 }
