@@ -153,6 +153,10 @@ Config export/import uses `mrconf:v1:<base64url>` token format, compatible with 
 | `GOOGLE_API_KEY` | - | Google AI API key |
 | `NEW_API_API_KEY` | - | New-API gateway API key (Chinese providers) |
 | `SILICONFLOW_API_KEY` | - | SiliconFlow API key (Chinese models) |
+| `QIANFAN_API_KEY` | - | Baidu QianFan (Ernie) API key |
+| `DASHSCOPE_API_KEY` | - | Alibaba DashScope (BaiLian) API key |
+| `TENCENT_CLOUD_API_KEY` | - | Tencent Cloud API key |
+| `KUAIPAO_API_KEY` | - | Kuaipao / 筷跑 API key |
 
 ## Docker
 

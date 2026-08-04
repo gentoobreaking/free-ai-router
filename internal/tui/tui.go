@@ -332,6 +332,13 @@ func (m *Model) settingsProviders() []SettingsProvider {
 		{Name: "scaleway", Enabled: false},
 		{Name: "kilocode", Enabled: false},
 		{Name: "ollama", Enabled: false},
+		{Name: "clawlabs", Enabled: false},
+		{Name: "new-api", Enabled: false},
+		{Name: "siliconflow", Enabled: false},
+		{Name: "baidu", Enabled: false},
+		{Name: "alibabacloud", Enabled: false},
+		{Name: "tencent", Enabled: false},
+		{Name: "kuaipao", Enabled: false},
 	}
 	if m.cfg != nil {
 		for i := range providers {

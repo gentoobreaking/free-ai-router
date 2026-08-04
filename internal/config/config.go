@@ -81,6 +81,10 @@ var EnvOverrides = []EnvOverride{
 	{Provider: "googleai", EnvVar: "GOOGLE_API_KEY"},
 	{Provider: "new-api", EnvVar: "NEW_API_API_KEY"},
 	{Provider: "siliconflow", EnvVar: "SILICONFLOW_API_KEY"},
+	{Provider: "baidu", EnvVar: "QIANFAN_API_KEY"},
+	{Provider: "alibabacloud", EnvVar: "DASHSCOPE_API_KEY"},
+	{Provider: "tencent", EnvVar: "TENCENT_CLOUD_API_KEY"},
+	{Provider: "kuaipao", EnvVar: "KUAIPAO_API_KEY"},
 }
 
 func DefaultConfig() *Config {

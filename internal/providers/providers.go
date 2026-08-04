@@ -320,6 +320,10 @@ func EnvVarForProvider(provider string) string {
 		"googleai":          "GOOGLE_API_KEY",
 		"new-api":           "NEW_API_API_KEY",
 		"siliconflow":       "SILICONFLOW_API_KEY",
+		"baidu":             "QIANFAN_API_KEY",
+		"alibabacloud":      "DASHSCOPE_API_KEY",
+		"tencent":           "TENCENT_CLOUD_API_KEY",
+		"kuaipao":           "KUAIPAO_API_KEY",
 	}
 
 	if env, ok := envMap[provider]; ok {
