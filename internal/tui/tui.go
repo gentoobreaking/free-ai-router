@@ -59,6 +59,10 @@ func NewModel() *Model {
 
 func (m *Model) SetRegistry(registry *models.Registry) {
 	m.registry = registry
+	m.engine = ping.NewEngine(nil)
+	m.engine.SetRegistry(registry)
+	m.engine.SetModels(registry.Snapshot())
+	m.engine.Start()
 }
 
 func (m *Model) SetConfig(cfg *config.Config) {
@@ -66,8 +70,10 @@ func (m *Model) SetConfig(cfg *config.Config) {
 	m.pauseMs = time.Duration(cfg.UI.ScrollSortPauseMs) * time.Millisecond
 }
 
+type tickMsg time.Time
+
 func (m *Model) Init() tea.Cmd {
-	return tea.EnterAltScreen
+	return tea.Sequence(tea.EnterAltScreen, tea.Tick(500*time.Millisecond, func(_ time.Time) tea.Msg { return tickMsg(time.Now()) }))
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -76,6 +82,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
+
+	case tickMsg:
+		return m, tea.Tick(500*time.Millisecond, func(_ time.Time) tea.Msg { return tickMsg(time.Now()) })
 
 	case tea.KeyMsg:
 		switch msg.String() {
