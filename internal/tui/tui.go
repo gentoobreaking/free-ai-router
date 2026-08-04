@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -35,6 +37,8 @@ type Model struct {
 	settingsIndex   int
 	settingsKeyEdit bool
 	settingsKeyBuf  string
+	settingsEditFor string
+	settingsMsg     string
 	showHelp        bool
 	pickerOpen      bool
 	pickerIndex     int
@@ -155,7 +159,7 @@ func (m *Model) View() string {
 		return RenderHelp()
 	}
 	if m.showSettings {
-		return RenderSettings(m.settingsProviders())
+		return RenderSettings(m.settingsProviders(), m.settingsIndex, m.settingsKeyEdit, m.settingsKeyBuf, m.settingsMsg)
 	}
 	if m.pickerOpen {
 		return m.renderTargetPicker()
@@ -314,14 +318,161 @@ func (m *Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleSettingsInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When editing a key, handle key entry / backspace / enter / esc
+	if m.settingsKeyEdit {
+		switch msg.String() {
+		case "enter":
+			// Save key
+			if m.cfg != nil && m.settingsEditFor != "" {
+				m.cfg.APIKeys[m.settingsEditFor] = m.settingsKeyBuf
+				_ = config.Save(m.cfg)
+			}
+			m.settingsKeyEdit = false
+			m.settingsKeyBuf = ""
+			m.settingsEditFor = ""
+		case "esc":
+			m.settingsKeyEdit = false
+			m.settingsKeyBuf = ""
+			m.settingsEditFor = ""
+		case "backspace":
+			if len(m.settingsKeyBuf) > 0 {
+				m.settingsKeyBuf = m.settingsKeyBuf[:len(m.settingsKeyBuf)-1]
+			}
+		default:
+			s := msg.String()
+			// Accept printable characters only
+			if len(msg.Runes) == 1 && msg.Runes[0] >= 32 && msg.Runes[0] < 127 {
+				m.settingsKeyBuf += s
+			}
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "esc", "q":
 		m.showSettings = false
 	case "ctrl+c":
 		m.quit = true
 		return m, tea.Quit
+	case "up", "k":
+		if m.settingsIndex > 0 {
+			m.settingsIndex--
+		}
+	case "down", "j":
+		providers := m.settingsProviders()
+		if m.settingsIndex < len(providers)-1 {
+			m.settingsIndex++
+		}
+	case " ":
+		// Toggle provider enabled status
+		providers := m.settingsProviders()
+		if m.settingsIndex >= 0 && m.settingsIndex < len(providers) {
+			name := providers[m.settingsIndex].Name
+			if m.cfg != nil {
+				pcfg := m.cfg.Providers[name]
+				pcfg.Enabled = !pcfg.Enabled
+				m.cfg.Providers[name] = pcfg
+				_ = config.Save(m.cfg)
+			}
+		}
+	case "enter":
+		// Enter inline key editing mode
+		providers := m.settingsProviders()
+		if m.settingsIndex >= 0 && m.settingsIndex < len(providers) {
+			p := providers[m.settingsIndex]
+			m.settingsKeyEdit = true
+			m.settingsEditFor = p.Name
+			m.settingsKeyBuf = p.Key
+		}
+	case "t", "T":
+		// Test ping for selected provider
+		providers := m.settingsProviders()
+		if m.settingsIndex >= 0 && m.settingsIndex < len(providers) {
+			name := providers[m.settingsIndex].Name
+			// Find a model from this provider and ping it
+			for _, mdl := range m.registry.Snapshot() {
+				if mdl.Provider == name && mdl.Status != "pending" {
+					status, code, lat := pingModelNowTUI(mdl)
+					if status == "up" {
+						m.settingsMsg = fmt.Sprintf("%s: up (%d, %dms)", name, code, lat.Milliseconds())
+					} else {
+						m.settingsMsg = fmt.Sprintf("%s: %s (%d, %dms)", name, status, code, lat.Milliseconds())
+					}
+					return m, nil
+				}
+			}
+			m.settingsMsg = name + ": no models to test"
+		}
+	case "d", "D":
+		// Delete key for selected provider
+		providers := m.settingsProviders()
+		if m.settingsIndex >= 0 && m.settingsIndex < len(providers) {
+			name := providers[m.settingsIndex].Name
+			if m.cfg != nil {
+				delete(m.cfg.APIKeys, name)
+				_ = config.Save(m.cfg)
+			}
+		}
+	case "o", "O":
+		// Open signup page
+		providers := m.settingsProviders()
+		if m.settingsIndex >= 0 && m.settingsIndex < len(providers) {
+			name := providers[m.settingsIndex].Name
+			if url := signupURL(name); url != "" {
+				_ = openBrowser(url)
+				m.settingsMsg = "opened " + url
+			} else {
+				m.settingsMsg = "no signup URL for " + name
+			}
+		}
 	}
 	return m, nil
+}
+
+// signupURL returns the signup URL for a provider or empty string.
+func signupURL(provider string) string {
+	urls := map[string]string{
+		"nvidia":       "https://build.nvidia.com/explore/discover",
+		"groq":         "https://console.groq.com/keys",
+		"cerebras":     "https://cloud.cerebras.ai/",
+		"openrouter":   "https://openrouter.ai/keys",
+		"googleai":     "https://aistudio.google.com/apikey",
+		"opencode":     "https://opencode.ai",
+		"codestral":    "https://console.mistral.ai/",
+		"scaleway":     "https://console.scaleway.com/",
+		"kilocode":     "https://kilocode.ai",
+		"siliconflow":  "https://siliconflow.cn/",
+		"baidu":        "https://console.bce.baidu.com/qianfan/",
+		"alibabacloud": "https://dashscope.aliyun.com/",
+		"tencent":      "https://console.cloud.tencent.com/hunyuan",
+	}
+	return urls[provider]
+}
+
+// pingModelNowTUI mirrors the server-side pingModelNow but uses the TUI's
+// shared engine pool for consistency.
+func pingModelNowTUI(m *models.Model) (string, int, time.Duration) {
+	if m.Endpoint == "" {
+		return "down", 0, 0
+	}
+	start := time.Now()
+	body := `{"model":"` + m.UpstreamModelID + `","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`
+	req, err := http.NewRequest(http.MethodPost, m.Endpoint, strings.NewReader(body))
+	if err != nil {
+		return "down", 0, 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if m.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+m.APIKey)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "down", 0, time.Since(start)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	return ping.StatusFromCode(resp.StatusCode), resp.StatusCode, time.Since(start)
 }
 
 func (m *Model) cycleTierFilter() {

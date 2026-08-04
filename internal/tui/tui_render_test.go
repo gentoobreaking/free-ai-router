@@ -68,7 +68,7 @@ func TestRenderSettings(t *testing.T) {
 		{Name: "openai", Enabled: true, Key: "sk-test"},
 		{Name: "anthropic", Enabled: true, Key: "sk-ant-test"},
 	}
-	out := RenderSettings(providers)
+	out := RenderSettings(providers, 0, false, "", "")
 	if !strings.Contains(out, "openai") {
 		t.Error("settings should contain provider name")
 	}

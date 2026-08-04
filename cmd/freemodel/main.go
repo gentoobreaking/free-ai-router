@@ -70,10 +70,17 @@ func run() error {
 	return runTUI(opts)
 }
 
-func buildRegistry() (*models.Registry, *models.TagManager, *providers.Manager, error) {
+func buildRegistry(refresh bool, useCache bool) (*models.Registry, *models.TagManager, *providers.Manager, error) {
 	provMgr := providers.NewManager()
-	if err := provMgr.LoadSources(providers.DataDir() + "/data/sources.json"); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to load sources: %w", err)
+
+	if useCache {
+		if err := provMgr.LoadSourcesWithCache(providers.DataDir()+"/data/sources.json", providers.DefaultCacheTTL, refresh); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to load sources: %w", err)
+		}
+	} else {
+		if err := provMgr.LoadSources(providers.DataDir() + "/data/sources.json"); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to load sources: %w", err)
+		}
 	}
 
 	provMgr.AutoDiscoverModels()
@@ -145,7 +152,7 @@ func applyEndpoints(registry *models.Registry, provMgr *providers.Manager) {
 }
 
 func runTUI(opts *cli.Options) error {
-	registry, _, _, err := buildRegistry()
+	registry, _, _, err := buildRegistry(opts.Refresh, !opts.NoCache)
 	if err != nil {
 		return err
 	}
@@ -169,7 +176,7 @@ func runTUI(opts *cli.Options) error {
 }
 
 func runServer(opts *cli.Options) error {
-	registry, _, provMgr, err := buildRegistry()
+	registry, _, provMgr, err := buildRegistry(opts.Refresh, !opts.NoCache)
 	if err != nil {
 		return err
 	}
@@ -229,7 +236,7 @@ func applyRouterConfig(registry *models.Registry, cfg *config.Config, opts *cli.
 }
 
 func runBest(opts *cli.Options) error {
-	registry, _, _, err := buildRegistry()
+	registry, _, _, err := buildRegistry(opts.Refresh, !opts.NoCache)
 	if err != nil {
 		return err
 	}

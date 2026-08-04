@@ -281,18 +281,25 @@ func containsLower(s, sub string) bool {
 	return len(s) >= len(sub) && strings.Index(s, sub) >= 0
 }
 
-func RenderSettings(providers []SettingsProvider) string {
+func RenderSettings(providers []SettingsProvider, selectedIndex int, keyEdit bool, keyBuf string, message string) string {
 	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render("free-router Settings"))
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render("freemodel-router Settings"))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  ↑↓:navigate  Enter:edit key  Space:toggle  T:test  D:delete  ESC/Q:back"))
+	b.WriteString(dimStyle.Render("  ↑↓:navigate  Enter:edit key  Space:toggle  T:test  D:delete  O:signup  ESC/Q:back"))
 	b.WriteString("\n\n")
 
-	for _, p := range providers {
+	for i, p := range providers {
+		marker := "  "
+		lineStyle := lipgloss.NewStyle()
+		if i == selectedIndex {
+			marker = "> "
+			lineStyle = lipgloss.NewStyle().Background(lipgloss.Color("236"))
+		}
+
 		state := "[OFF]"
 		color := lipgloss.NewStyle().Faint(true)
 		if p.Enabled {
-			state = "[ON]"
+			state = "[ON] "
 			color = greenStyle
 		}
 		key := "(no key)"
@@ -303,12 +310,22 @@ func RenderSettings(providers []SettingsProvider) string {
 		if p.TestStatus != "" {
 			status = p.TestStatus
 		}
-		b.WriteString(fmt.Sprintf("  %s %s %-22s %-20s %s\n",
+		line := fmt.Sprintf("%s%s %-18s %-20s %s",
+			marker,
 			color.Render(state),
 			brightCyan.Render(p.Name),
-			p.Name,
 			key,
-			status))
+			status)
+		b.WriteString(lineStyle.Render(line) + "\n")
+	}
+
+	if keyEdit {
+		b.WriteString("\n" + boldText.Render("  Enter API key (ESC to cancel, Enter to save):"))
+		b.WriteString("\n  > " + maskKeyInline(keyBuf))
+	}
+
+	if message != "" {
+		b.WriteString("\n\n  " + dimStyle.Render(message))
 	}
 	return b.String()
 }
@@ -325,6 +342,17 @@ func maskKey(key string) string {
 		return "****"
 	}
 	return key[:4] + "...****"
+}
+
+func maskKeyInline(key string) string {
+	if key == "" {
+		return ""
+	}
+	result := make([]byte, len(key))
+	for i := range result {
+		result[i] = '*'
+	}
+	return string(result)
 }
 
 func RenderHelp() string {

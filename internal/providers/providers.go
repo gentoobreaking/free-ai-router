@@ -47,21 +47,40 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) LoadSources(path string) error {
-		m.mu.Lock()
-		defer m.mu.Unlock()
+	return m.LoadSourcesWithCache(path, defaultCacheTTL, false)
+}
 
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
+// LoadSourcesWithCache loads providers from sources.json, with an optional
+// on-disk cache to avoid repeated HTTP discovery work. Set forceRefresh to
+// true to skip cache reads (but still write a fresh cache after success).
+func (m *Manager) LoadSourcesWithCache(path string, cacheTTL time.Duration, forceRefresh bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	sourcesHash := computeSourcesHash(data)
+	dataDir := filepath.Dir(filepath.Dir(path)) // path is data/sources.json → parent is data dir parent
+
+	// Try cache (skip if --refresh)
+	if !forceRefresh {
+		if cache := loadCache(cachePath(dataDir), sourcesHash, cacheTTL); cache != nil {
+			restoreFromCache(m, cache)
+			return nil
 		}
+	}
 
-		var sources map[string]SourceProvider
-		if err := json.Unmarshal(data, &sources); err != nil {
-			return err
-		}
+	// ── Full discovery (existing logic) ──
+	var sources map[string]SourceProvider
+	if err := json.Unmarshal(data, &sources); err != nil {
+		return err
+	}
 
-		freeOpenRouterModels := m.fetchFreeOpenRouterModels()
-		clawLabsModels := m.fetchClawLabsModels()
+	freeOpenRouterModels := m.fetchFreeOpenRouterModels()
+	clawLabsModels := m.fetchClawLabsModels()
 
 		for key, src := range sources {
 			models := make([]ModelEntry, 0, len(src.Models))
@@ -125,6 +144,10 @@ func (m *Manager) LoadSources(path string) error {
 				}
 			}
 		}
+
+		// Save merged result to cache
+		ttlMinutes := int(cacheTTL.Minutes())
+		saveCache(m.providers, dataDir, sourcesHash, ttlMinutes)
 
 		return nil
 	}

@@ -29,6 +29,7 @@ type Server struct {
 	handler   http.Handler
 	providers *providers.Manager
 	engine    *ping.Engine
+	startTime time.Time
 
 	updateMu        sync.Mutex
 	updateCheck     func() (string, error)
@@ -42,11 +43,12 @@ const updateCheckTTL = 30 * time.Minute
 
 func NewServer(registry *models.Registry, cfg interface{}, port int, version string, logEnabled bool) *Server {
 	s := &Server{
-		registry: registry,
-		cfg:      cfg,
-		port:     port,
-		version:  version,
-		logger:   NewLogger(logEnabled),
+		registry:  registry,
+		cfg:       cfg,
+		port:      port,
+		version:   version,
+		startTime: time.Now(),
+		logger:    NewLogger(logEnabled),
 	}
 	s.router = NewRouter(registry, s.logger)
 	s.handler = s.buildHandler()
@@ -112,6 +114,8 @@ func (s *Server) buildHandler() http.Handler {
 	mux.HandleFunc("GET /api/filter-rules", s.handleAPIFilterRulesGet)
 	mux.HandleFunc("POST /api/filter-rules", s.handleAPIFilterRulesPost)
 	mux.HandleFunc("GET /api/logs", s.handleAPILogs)
+	mux.HandleFunc("GET /api/health", s.handleAPIHealth)
+	mux.HandleFunc("GET /api/status", s.handleAPIStatus)
 
 	return mux
 }
@@ -723,6 +727,90 @@ func (s *Server) handleAPIFilterRulesPost(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":         "ok",
+		"uptime_seconds": int(time.Since(s.startTime).Seconds()),
+	})
+}
+
+// handleAPIStatus returns a summary of model health for monitoring and the
+// `freemodel status` CLI command.
+func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
+	all := s.registry.Snapshot()
+
+	total := len(all)
+	var up, down, pending int
+	providerStats := make(map[string]struct{ up, total int })
+	var bestModel *models.Model
+	var bestAvg float64 = 1e9
+	var totalLatency float64
+	var latencyCount int
+
+	for _, m := range all {
+		ps := providerStats[m.Provider]
+		ps.total++
+		switch m.Status {
+		case "up":
+			ps.up++
+			up++
+			if m.AvgLatency > 0 && m.AvgLatency < bestAvg {
+				bestModel = m
+				bestAvg = m.AvgLatency
+			}
+			totalLatency += m.AvgLatency
+			latencyCount++
+		case "down", "noauth", "forbidden", "notfound", "ratelimit", "unavailable":
+			down++
+		default:
+			pending++
+		}
+		providerStats[m.Provider] = ps
+	}
+
+	var avgLatency float64
+	if latencyCount > 0 {
+		avgLatency = totalLatency / float64(latencyCount)
+	}
+
+	var uptimePct float64
+	if total > 0 {
+		uptimePct = float64(up) / float64(total) * 100
+	}
+
+	providers := make(map[string]map[string]int, len(providerStats))
+	for name, ps := range providerStats {
+		providers[name] = map[string]int{"up": ps.up, "total": ps.total}
+	}
+
+	best := make(map[string]interface{})
+	if bestModel != nil {
+		best["id"] = bestModel.ID
+		best["provider"] = bestModel.Provider
+		best["avg_latency_ms"] = int(bestModel.AvgLatency)
+	}
+
+	cfg, _ := s.cfg.(*config.Config)
+	codingOnly := true
+	if cfg != nil {
+		cfg.RLock()
+		codingOnly = cfg.CodingOnly
+		cfg.RUnlock()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"total_models":   total,
+		"models_up":      up,
+		"models_down":    down,
+		"models_pending": pending,
+		"best_model":     best,
+		"providers":      providers,
+		"avg_latency_ms": int(avgLatency),
+		"uptime_pct":     float64(int(uptimePct*10)) / 10,
+		"free_tier_only": codingOnly,
+	})
 }
 
 func (s *Server) handleAPILogs(w http.ResponseWriter, r *http.Request) {

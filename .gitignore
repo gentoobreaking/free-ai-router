@@ -2,3 +2,4 @@ dist/
 freemodel-router
 *.log
 .DS_Store
+data/merged-cache.json

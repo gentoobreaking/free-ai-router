@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// detectOnce guards one-shot auto-detection of keys from shell RC files and
+// agent configs. Results are cached for the process lifetime.
+var detectOnce sync.Once
+var detectedKeys map[string]string
+
 const ConfigFileName = ".freemodel-router.json"
 const LegacyConfigFileName = ".free-router.json"
 const EnvConfigPathVar = "FREMODEL_CONFIG_PATH"
@@ -28,6 +33,7 @@ type Config struct {
 	ModelTags         map[string][]string       `json:"modelTags"`
 	AutoPingEnabled   bool                      `json:"autoPingEnabled"`
 	CodingOnly        bool                      `json:"codingOnly"`
+	AutoDetectKeys    bool                      `json:"autoDetectKeys"`
 	UI                UIConfig                  `json:"ui"`
 }
 
@@ -98,6 +104,7 @@ func DefaultConfig() *Config {
 		ModelTags:         make(map[string][]string),
 		AutoPingEnabled:   true,
 		CodingOnly:        true,
+		AutoDetectKeys:    true,
 		UI:                UIConfig{ScrollSortPauseMs: 1500},
 	}
 }
@@ -253,18 +260,28 @@ func ResolveAPIKey(provider string, cfg *Config) string {
 	}
 
 	keys, ok := cfg.APIKeys[provider]
-	if !ok {
-		return ""
+	if ok {
+		switch v := keys.(type) {
+		case string:
+			if v != "" {
+				return v
+			}
+		case []interface{}:
+			if len(v) > 0 {
+				if s, ok := v[0].(string); ok && s != "" {
+					return s
+				}
+			}
+		}
 	}
 
-	switch v := keys.(type) {
-	case string:
-		return v
-	case []interface{}:
-		if len(v) > 0 {
-			if s, ok := v[0].(string); ok {
-				return s
-			}
+	// Layer 3: auto-detect from shell RC files / agent configs
+	if cfg.AutoDetectKeys {
+		detectOnce.Do(func() {
+			detectedKeys = AutoDetectKeys()
+		})
+		if key, ok := detectedKeys[provider]; ok && key != "" {
+			return key
 		}
 	}
 
