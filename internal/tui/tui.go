@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -106,7 +105,7 @@ func (t *TUI) Run() error {
 	t.resize()
 
 	sigCh := make(chan os.Signal, 4)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGWINCH)
+	setupSignals(sigCh)
 	defer signal.Stop(sigCh)
 
 	t.input.Start()
@@ -136,11 +135,7 @@ func (t *TUI) Run() error {
 // handleSignal dispatches process signals: SIGWINCH resizes the terminal
 // view; everything else (SIGINT/SIGTERM) quits the TUI.
 func (t *TUI) handleSignal(sig os.Signal) {
-	if sig == syscall.SIGWINCH {
-		t.resize()
-		return
-	}
-	t.quit = true
+	handleSignal(t, sig)
 }
 
 func (t *TUI) resize() {
