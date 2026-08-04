@@ -9,7 +9,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/freemodel/router/internal/config"
 	"github.com/freemodel/router/internal/models"
+	"github.com/freemodel/router/internal/ping"
 )
 
 const DefaultPort = 7352
@@ -41,6 +43,12 @@ func NewServer(registry *models.Registry, cfg interface{}, port int, version str
 func (s *Server) Start() error {
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 	return http.ListenAndServe(addr, s.handler)
+}
+
+// SetPool shares the keep-alive transport pool between the ping engine and
+// the proxy router (§7.4).
+func (s *Server) SetPool(pool *ping.TransportPool) {
+	s.router.SetPool(pool)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -95,10 +103,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	models := s.registry.GetAll()
+	models := s.registry.Snapshot()
 	type modelInfo struct {
-		ID    string   `json:"id"`
-		Tags  []string `json:"tags,omitempty"`
+		ID   string   `json:"id"`
+		Tags []string `json:"tags,omitempty"`
 	}
 	result := make([]modelInfo, 0, len(models))
 	for _, m := range models {
@@ -115,7 +123,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPIModels(w http.ResponseWriter, r *http.Request) {
-	models := s.registry.GetAll()
+	models := s.registry.Snapshot()
 	type modelInfo struct {
 		ID         string   `json:"id"`
 		Provider   string   `json:"provider"`
@@ -156,18 +164,70 @@ func (s *Server) handleAPIConfigPost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if err := s.applyConfigPayload(payload); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// applyConfigPayload merges a client-provided partial config into the running
+// config and persists it (spec §7.2 /api/config).
+func (s *Server) applyConfigPayload(payload map[string]interface{}) error {
+	cfg, ok := s.cfg.(*config.Config)
+	if !ok || cfg == nil {
+		return fmt.Errorf("config not available")
+	}
+	if v, ok := payload["apiKeys"]; ok {
+		if keys, ok := v.(map[string]interface{}); ok {
+			cfg.APIKeys = keys
+		}
+	}
+	if v, ok := payload["bannedModels"]; ok {
+		if list, ok := v.([]interface{}); ok {
+			var banned []string
+			for _, item := range list {
+				if s, ok := item.(string); ok {
+					banned = append(banned, s)
+				}
+			}
+			cfg.BannedModels = banned
+		}
+	}
+	if v, ok := payload["codingOnly"]; ok {
+		if b, ok := v.(bool); ok {
+			cfg.CodingOnly = b
+		}
+	}
+	if v, ok := payload["autoPingEnabled"]; ok {
+		if b, ok := v.(bool); ok {
+			cfg.AutoPingEnabled = b
+		}
+	}
+	if v, ok := payload["excludedProviders"]; ok {
+		if list, ok := v.([]interface{}); ok {
+			var excluded []string
+			for _, item := range list {
+				if s, ok := item.(string); ok {
+					excluded = append(excluded, s)
+				}
+			}
+			cfg.ExcludedProviders = excluded
+		}
+	}
+	return config.Save(cfg)
 }
 
 func (s *Server) handleAPIMeta(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"version":        s.version,
+		"version":         s.version,
 		"updateAvailable": false,
 	})
 }
 
 func (s *Server) handleAPIPinnedGet(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{"pinned": s.router.pinned})
+	pinned, mode := s.router.Pinned()
+	writeJSON(w, http.StatusOK, map[string]interface{}{"pinned": pinned, "mode": mode})
 }
 
 func (s *Server) handleAPIPinnedPost(w http.ResponseWriter, r *http.Request) {
@@ -184,10 +244,26 @@ func (s *Server) handleAPIPinnedPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAPIAutoPingGet(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{"autoPing": true})
+	cfg, ok := s.cfg.(*config.Config)
+	if !ok || cfg == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"autoPing": true})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"autoPing": cfg.AutoPingEnabled})
 }
 
 func (s *Server) handleAPIAutoPingPost(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		AutoPing *bool `json:"autoPing"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&payload)
+	if cfg, ok := s.cfg.(*config.Config); ok && cfg != nil && payload.AutoPing != nil {
+		cfg.AutoPingEnabled = *payload.AutoPing
+		if err := config.Save(cfg); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -205,11 +281,13 @@ func (s *Server) handleAPIModelsBan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 		return
 	}
-	if payload.Banned != nil {
-		m.Banned = *payload.Banned
-	} else {
-		m.Banned = !m.Banned
-	}
+	s.registry.UpdateModel(payload.ModelID, func(x *models.Model) {
+		if payload.Banned != nil {
+			x.Banned = *payload.Banned
+		} else {
+			x.Banned = !x.Banned
+		}
+	})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"banned": m.Banned})
 }
 
@@ -241,15 +319,33 @@ func (s *Server) handleAPIConfigImport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if !strings.HasPrefix(payload.Token, "mrconf:v1:") {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid token"})
+	imported, err := config.ImportToken(payload.Token)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
+	}
+	if err := config.Save(imported); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if cfg, ok := s.cfg.(*config.Config); ok {
+		*cfg = *imported
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleAPIConfigExport(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"token": ""})
+	cfg, ok := s.cfg.(*config.Config)
+	if !ok || cfg == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"token": ""})
+		return
+	}
+	token, err := config.ExportToken(cfg)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
 func (s *Server) handleAPIAccountStatus(w http.ResponseWriter, r *http.Request) {
@@ -257,10 +353,42 @@ func (s *Server) handleAPIAccountStatus(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleAPIAutoUpdateGet(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{"enabled": true, "intervalHours": 24})
+	cfg, ok := s.cfg.(*config.Config)
+	if !ok || cfg == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"enabled": true, "intervalHours": 24})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"enabled":       cfg.AutoUpdate.Enabled,
+		"intervalHours": cfg.AutoUpdate.IntervalHours,
+		"lastCheckAt":   cfg.AutoUpdate.LastCheckAt,
+	})
 }
 
 func (s *Server) handleAPIAutoUpdatePost(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Enabled       *bool `json:"enabled"`
+		IntervalHours *int  `json:"intervalHours"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	cfg, ok := s.cfg.(*config.Config)
+	if !ok || cfg == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config not available"})
+		return
+	}
+	if payload.Enabled != nil {
+		cfg.AutoUpdate.Enabled = *payload.Enabled
+	}
+	if payload.IntervalHours != nil && *payload.IntervalHours > 0 {
+		cfg.AutoUpdate.IntervalHours = *payload.IntervalHours
+	}
+	if err := config.Save(cfg); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -278,15 +406,46 @@ func (s *Server) handleAPIModelsTags(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 		return
 	}
-	m.Tags = payload.Tags
+	s.registry.UpdateModel(payload.ModelID, func(x *models.Model) { x.Tags = payload.Tags })
 	writeJSON(w, http.StatusOK, map[string]interface{}{"tags": m.Tags})
 }
 
 func (s *Server) handleAPIFilterRulesGet(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{"minSweScore": nil, "excludedProviders": []string{}})
+	cfg, ok := s.cfg.(*config.Config)
+	if !ok || cfg == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"minSweScore": nil, "excludedProviders": []string{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"minSweScore":       cfg.MinSweScore,
+		"excludedProviders": cfg.ExcludedProviders,
+	})
 }
 
 func (s *Server) handleAPIFilterRulesPost(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		MinSweScore       *float64  `json:"minSweScore"`
+		ExcludedProviders *[]string `json:"excludedProviders"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	cfg, ok := s.cfg.(*config.Config)
+	if !ok || cfg == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config not available"})
+		return
+	}
+	if payload.MinSweScore != nil {
+		cfg.MinSweScore = payload.MinSweScore
+	}
+	if payload.ExcludedProviders != nil {
+		cfg.ExcludedProviders = *payload.ExcludedProviders
+	}
+	if err := config.Save(cfg); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

@@ -107,7 +107,7 @@ Selection: status=up → lowest avg latency → highest uptime.
 
 ## Config
 
-Config file: `~/.config/freemodel-router.json` (mode 0600)
+Config file: `~/.freemodel-router.json` (mode 0600; legacy `~/.free-router.json` auto-migrated on first load)
 
 ```json
 {
@@ -144,7 +144,7 @@ Config export/import uses `mrconf:v1:<base64url>` token format, compatible with 
 |---|---|---|
 | `FREMODEL_PORT` | 7352 | Router listen port |
 | `FREMODEL_LOG` | false | Enable request payload logging |
-| `FREMODEL_CONFIG_PATH` | `~/.config/freemodel-router.json` | Override config file path |
+| `FREMODEL_CONFIG_PATH` | `~/.freemodel-router.json` | Override config file path |
 | `NVIDIA_API_KEY` | - | NIM API key |
 | `GROQ_API_KEY` | - | Groq API key |
 | `CEREBRAS_API_KEY` | - | Cerebras API key |
@@ -186,7 +186,7 @@ Integration tests: TUI rendering, proxy failover, provider discovery, target han
 freemodel-router (Go binary)
 ├── cmd/freemodel/          # CLI entry point
 ├── internal/
-│   ├── config/             # Config I/O (~/.config/freemodel-router.json)
+│   ├── config/             # Config I/O (~/.freemodel-router.json)
 │   ├── providers/          # Provider definitions, discovery, auth
 │   ├── models/             # Model catalog, aliasing, quality scoring, tags
 │   ├── ping/               # Parallel ping engine with keep-alive pool

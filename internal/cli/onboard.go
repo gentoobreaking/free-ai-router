@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/freemodel/router/internal/config"
@@ -109,7 +110,16 @@ func setEnabled(cfg *config.Config, provider string) {
 	cfg.Providers[provider] = pcfg
 }
 
+// openBrowser opens url with the platform's default browser (best effort).
 func openBrowser(url string) error {
-	cmd := exec.Command("open", url)
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
 	return cmd.Run()
 }

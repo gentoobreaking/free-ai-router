@@ -15,7 +15,17 @@ func RunBest(registry *models.Registry, resolveKey func(provider string) string)
 		return "", fmt.Errorf("no models in catalog")
 	}
 
+	// Resolve API keys per provider (env > config) so pings carry auth (§10.3).
+	for _, m := range all {
+		if m.APIKey == "" && resolveKey != nil {
+			if key := resolveKey(m.Provider); key != "" {
+				registry.UpdateModel(m.ID, func(x *models.Model) { x.APIKey = key })
+			}
+		}
+	}
+
 	engine := ping.NewEngine(nil)
+	engine.SetRegistry(registry)
 	engine.SetModels(registry.GetAll())
 
 	for i := 0; i < BestPingRounds; i++ {

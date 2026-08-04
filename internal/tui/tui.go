@@ -2,58 +2,74 @@ package tui
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"golang.org/x/term"
 
+	"github.com/freemodel/router/internal/config"
 	"github.com/freemodel/router/internal/models"
 	"github.com/freemodel/router/internal/ping"
+	"github.com/freemodel/router/internal/targets"
 )
 
 const renderThrottle = 33 * time.Millisecond
 const liveUpdateThrottle = 300 * time.Millisecond
 
 type TUI struct {
-	engine      *ping.Engine
-	registry    *models.Registry
-	renderer    *Renderer
-	input       *Input
-	models      []*models.Model
-	selected    int
-	searchQuery string
-	sortKey     string
-	sortReverse bool
-	tierFilter  string
-	providerFilter string
-	codingOnly  bool
-	intervalMs  int
-	showSettings bool
-	showHelp    bool
-	width       int
-	height      int
-	blurred     bool
-	renderPending bool
-	lastRender  time.Time
-	lastLiveUpdate time.Time
-	quit        bool
-	paused      bool
-	pauseUntil  time.Time
-	configPath  string
+	engine          *ping.Engine
+	registry        *models.Registry
+	renderer        *Renderer
+	input           *Input
+	models          []*models.Model
+	selected        int
+	searchQuery     string
+	searchMode      bool
+	sortKey         string
+	sortReverse     bool
+	tierFilter      string
+	providerFilter  string
+	codingOnly      bool
+	intervalMs      int
+	showSettings    bool
+	settingsIndex   int
+	settingsKeyEdit bool
+	settingsKeyBuf  string
+	settingsTestMsg string
+	showHelp        bool
+	width           int
+	height          int
+	blurred         bool
+	renderPending   bool
+	lastRender      time.Time
+	lastLiveUpdate  time.Time
+	quit            bool
+	paused          bool
+	pauseUntil      time.Time
+	configPath      string
+	cfg             *config.Config
+	pickerOpen      bool
+	pickerIndex     int
+	pickerMsg       string
+	pickerTargets   []targets.Target
 }
 
 func New(cfg *Config) *TUI {
 	t := &TUI{
-		renderer:    NewRenderer(),
-		input:       NewInput(),
-		sortKey:     "0",
-		intervalMs:  2000,
-		codingOnly:  true,
-		width:       120,
-		height:      40,
-		lastRender:  time.Now(),
+		renderer:       NewRenderer(),
+		input:          NewInput(),
+		sortKey:        "0",
+		intervalMs:     2000,
+		codingOnly:     true,
+		width:          120,
+		height:         40,
+		lastRender:     time.Now(),
 		lastLiveUpdate: time.Now(),
 	}
 	t.engine = ping.NewEngine(t.onPingUpdate)
@@ -68,6 +84,10 @@ type Config struct {
 
 func (t *TUI) SetRegistry(registry *models.Registry) {
 	t.registry = registry
+}
+
+func (t *TUI) SetConfig(cfg *config.Config) {
+	t.cfg = cfg
 }
 
 func (t *TUI) Run() error {
@@ -146,11 +166,18 @@ func (t *TUI) render() {
 		return
 	}
 
-	all := t.registry.GetAll()
+	all := t.registry.Snapshot()
+
+	if t.pickerOpen {
+		fmt.Print(t.renderTargetPicker())
+		return
+	}
 
 	filtered := filterModels(all, t.codingOnly, t.tierFilter, t.providerFilter, t.searchQuery)
 
 	models.SortModels(filtered, t.sortKey, t.sortReverse)
+
+	t.models = filtered
 
 	if t.selected >= len(filtered) {
 		t.selected = len(filtered) - 1
@@ -165,7 +192,7 @@ func (t *TUI) render() {
 	}
 
 	if t.showSettings {
-		fmt.Print(RenderSettings(nil))
+		fmt.Print(RenderSettings(t.settingsProviders()))
 		return
 	}
 
@@ -173,6 +200,7 @@ func (t *TUI) render() {
 		Models:         filtered,
 		SelectedIndex:  t.selected,
 		SearchQuery:    t.searchQuery,
+		SearchActive:   t.searchMode,
 		TotalCount:     len(all),
 		SortKey:        t.sortKey,
 		SortReverse:    t.sortReverse,
@@ -220,8 +248,18 @@ func (t *TUI) handleInput(ev InputEvent) {
 		return
 	}
 
+	if t.pickerOpen {
+		t.handlePickerInput(ev)
+		return
+	}
+
 	if t.showSettings {
 		t.handleSettingsInput(ev)
+		return
+	}
+
+	if t.searchMode {
+		t.handleSearchInput(ev)
 		return
 	}
 
@@ -240,6 +278,11 @@ func (t *TUI) handleInput(ev InputEvent) {
 		t.selected = t.visibleCount()
 	case KeyEnter:
 		t.openTargetPicker()
+	case KeyBackspace:
+		if t.searchQuery != "" {
+			t.searchQuery = t.searchQuery[:len(t.searchQuery)-1]
+			t.renderPending = true
+		}
 	case KeyRune:
 		switch ev.Rune {
 		case 'q':
@@ -255,7 +298,8 @@ func (t *TUI) handleInput(ev InputEvent) {
 			t.selected = t.visibleCount()
 			t.renderPending = true
 		case '/':
-			t.toggleSearch()
+			t.searchMode = true
+			t.renderPending = true
 		case 'C':
 			t.codingOnly = !t.codingOnly
 			t.renderPending = true
@@ -269,6 +313,7 @@ func (t *TUI) handleInput(ev InputEvent) {
 			t.changeInterval(1)
 		case 'P':
 			t.showSettings = true
+			t.settingsIndex = 0
 			t.renderPending = true
 		case '?':
 			t.showHelp = true
@@ -304,6 +349,154 @@ func (t *TUI) handleInput(ev InputEvent) {
 	}
 }
 
+// handleSearchInput: live filter while typing; Enter exits search and opens
+// the target picker; ESC clears the query and exits (spec §6.8).
+func (t *TUI) handleSearchInput(ev InputEvent) {
+	switch ev.Key {
+	case KeyEnter:
+		t.searchMode = false
+		t.renderPending = true
+		t.openTargetPicker()
+	case KeyEsc:
+		t.searchQuery = ""
+		t.searchMode = false
+		t.renderPending = true
+	case KeyBackspace:
+		if t.searchQuery != "" {
+			t.searchQuery = t.searchQuery[:len(t.searchQuery)-1]
+			t.renderPending = true
+		}
+	case KeyCtrlC:
+		t.quit = true
+	case KeyRune:
+		if ev.Rune >= 32 && ev.Rune != '/' {
+			t.searchQuery += string(ev.Rune)
+			t.renderPending = true
+		}
+	}
+}
+
+// openTargetPicker opens the configure-for-agent modal (spec §6.14).
+func (t *TUI) openTargetPicker() {
+	t.pickerTargets = []targets.Target{
+		&targets.OpenCodeTarget{},
+		&targets.OpenClawTarget{},
+		&targets.HermesTarget{},
+		&targets.PiTarget{},
+	}
+	t.pickerIndex = 0
+	t.pickerMsg = ""
+	t.pickerOpen = true
+	t.renderPending = true
+}
+
+func (t *TUI) handlePickerInput(ev InputEvent) {
+	switch ev.Key {
+	case KeyUp, KeyRune:
+		if ev.Key == KeyRune {
+			switch ev.Rune {
+			case 'k':
+				t.pickerIndex--
+			case 'j':
+				t.pickerIndex++
+			case 'q', 'Q':
+				t.pickerOpen = false
+				t.renderPending = true
+				return
+			default:
+				return
+			}
+		} else {
+			t.pickerIndex--
+		}
+		if t.pickerIndex < 0 {
+			t.pickerIndex = len(t.pickerTargets) - 1
+		}
+		t.renderPending = true
+	case KeyDown:
+		t.pickerIndex++
+		if t.pickerIndex >= len(t.pickerTargets) {
+			t.pickerIndex = 0
+		}
+		t.renderPending = true
+	case KeyEnter:
+		t.saveTargetConfig()
+	case KeyEsc:
+		t.pickerOpen = false
+		t.renderPending = true
+	case KeyCtrlC:
+		t.quit = true
+	}
+}
+
+func (t *TUI) saveTargetConfig() {
+	if t.pickerIndex < 0 || t.pickerIndex >= len(t.pickerTargets) {
+		return
+	}
+	var current *models.Model
+	if t.selected >= 0 && t.selected < len(t.models) {
+		current = t.models[t.selected]
+	}
+	if current == nil {
+		current = models.FindBestModel(t.registry.Snapshot())
+	}
+	if current == nil {
+		t.pickerMsg = "no model selected"
+		t.renderPending = true
+		return
+	}
+
+	target := t.pickerTargets[t.pickerIndex]
+	if err := target.Write(current.ID); err != nil {
+		t.pickerMsg = "failed: " + err.Error()
+	} else {
+		t.pickerMsg = "saved " + current.ID + " to " + target.Name()
+		binary := targetBinary(target.Name())
+		if binary != "" && targets.IsInstalled(binary) {
+			launchTarget(binary)
+			t.pickerMsg += "; launched " + binary
+		}
+	}
+	t.pickerOpen = false
+	t.renderPending = true
+}
+
+func targetBinary(name string) string {
+	switch name {
+	case "OpenCode":
+		return "opencode"
+	case "OpenClaw":
+		return "openclaw"
+	case "Hermes Agent":
+		return "hermes"
+	case "Pi Agent":
+		return "pi"
+	default:
+		return ""
+	}
+}
+
+func (t *TUI) renderTargetPicker() string {
+	var b string
+	b += fmt.Sprintf("%sConfigure for target agent%s\n\n", Bold, Reset)
+	for i, target := range t.pickerTargets {
+		marker := "  "
+		row := fmt.Sprintf("%s %-16s %s", target.Name(), Dim+target.ConfigPath()+Reset, "")
+		if i == t.pickerIndex {
+			marker = "> "
+			row = BrightCyan + target.Name() + Reset + "  " + Dim + target.ConfigPath() + Reset
+		} else {
+			row = fmt.Sprintf("%s %-16s %s", target.Name(), Dim+target.ConfigPath()+Reset, "")
+		}
+		b += fmt.Sprintf("%s%s\n", marker, row)
+	}
+	b += "\n" + Dim + "  ↑↓/jk: navigate  Enter: save  ESC/q: back" + Reset + "\n"
+	if t.pickerMsg != "" {
+		b += "\n  " + t.pickerMsg + "\n"
+	}
+	return CursorHome() + b
+}
+
 func (t *TUI) navigate(delta int) {
 	t.paused = true
 	t.pauseUntil = time.Now().Add(1500 * time.Millisecond)
@@ -318,9 +511,219 @@ func (t *TUI) visibleCount() int {
 	return t.height - 10
 }
 
-func (t *TUI) toggleSearch() {
-	// Search mode handled by main loop reading runes; simplified
-	t.renderPending = true
+// settingsProviders builds the provider list for the settings screen from
+// config + live registry state (spec §6.13).
+func (t *TUI) settingsProviders() []SettingsProvider {
+	providers := []SettingsProvider{
+		{Name: "nvidia", Enabled: false},
+		{Name: "groq", Enabled: false},
+		{Name: "cerebras", Enabled: false},
+		{Name: "openrouter", Enabled: false},
+		{Name: "googleai", Enabled: false},
+		{Name: "opencode", Enabled: false},
+		{Name: "codestral", Enabled: false},
+		{Name: "scaleway", Enabled: false},
+		{Name: "kilocode", Enabled: false},
+		{Name: "ollama", Enabled: false},
+	}
+
+	if t.cfg != nil {
+		for i := range providers {
+			name := providers[i].Name
+			if pcfg, ok := t.cfg.Providers[name]; ok {
+				providers[i].Enabled = pcfg.Enabled
+			}
+			if key := config.ResolveAPIKey(name, t.cfg); key != "" {
+				providers[i].Key = key
+			}
+		}
+	}
+
+	if t.registry != nil {
+		for _, m := range t.registry.Snapshot() {
+			for i := range providers {
+				if providers[i].Name == m.Provider && m.Status == "up" {
+					providers[i].TestStatus = "up"
+				}
+			}
+		}
+	}
+
+	if t.settingsTestMsg != "" {
+		if t.settingsIndex >= 0 && t.settingsIndex < len(providers) {
+			providers[t.settingsIndex].TestStatus = t.settingsTestMsg
+		}
+	}
+
+	return providers
+}
+
+// handleSettingsInput: ↑↓/jk navigate, Space toggle enabled, Enter edit key,
+// T test ping, D delete key, ESC/Q back (spec §6.13). Changes persist to
+// config immediately.
+func (t *TUI) handleSettingsInput(ev InputEvent) {
+	providers := t.settingsProviders()
+
+	if t.settingsKeyEdit {
+		switch ev.Key {
+		case KeyEnter:
+			if t.cfg != nil {
+				key := stringsTrimSpace(t.settingsKeyBuf)
+				if key != "" {
+					name := providers[t.settingsIndex].Name
+					t.cfg.APIKeys[name] = key
+					if pcfg, ok := t.cfg.Providers[name]; ok {
+						pcfg.Enabled = true
+						t.cfg.Providers[name] = pcfg
+					} else {
+						t.cfg.Providers[name] = config.ProviderConfig{Enabled: true}
+					}
+					_ = config.Save(t.cfg)
+				}
+			}
+			t.settingsKeyEdit = false
+			t.settingsKeyBuf = ""
+			t.renderPending = true
+		case KeyEsc:
+			t.settingsKeyEdit = false
+			t.settingsKeyBuf = ""
+			t.renderPending = true
+		case KeyBackspace:
+			if t.settingsKeyBuf != "" {
+				t.settingsKeyBuf = t.settingsKeyBuf[:len(t.settingsKeyBuf)-1]
+				t.renderPending = true
+			}
+		case KeyRune:
+			if ev.Rune >= 32 {
+				t.settingsKeyBuf += string(ev.Rune)
+				t.renderPending = true
+			}
+		}
+		return
+	}
+
+	if ev.Key == KeyEsc || ev.Key == KeyRune && (ev.Rune == 'q' || ev.Rune == 'Q') {
+		t.showSettings = false
+		t.settingsTestMsg = ""
+		t.renderPending = true
+		return
+	}
+
+	switch ev.Key {
+	case KeyUp, KeyRune:
+		if ev.Key == KeyRune {
+			switch ev.Rune {
+			case 'k':
+				if t.settingsIndex > 0 {
+					t.settingsIndex--
+					t.renderPending = true
+				}
+			case 'j':
+				if t.settingsIndex < len(providers)-1 {
+					t.settingsIndex++
+					t.renderPending = true
+				}
+			case ' ':
+				if t.cfg != nil && t.settingsIndex < len(providers) {
+					name := providers[t.settingsIndex].Name
+					pcfg, ok := t.cfg.Providers[name]
+					if !ok {
+						pcfg = config.ProviderConfig{}
+					}
+					pcfg.Enabled = !pcfg.Enabled
+					t.cfg.Providers[name] = pcfg
+					_ = config.Save(t.cfg)
+					t.renderPending = true
+				}
+			case 'T':
+				if t.settingsIndex < len(providers) {
+					t.settingsTestMsg = t.testProviderPing(providers[t.settingsIndex].Name)
+					t.renderPending = true
+				}
+			case 'D':
+				if t.cfg != nil && t.settingsIndex < len(providers) {
+					name := providers[t.settingsIndex].Name
+					delete(t.cfg.APIKeys, name)
+					if pcfg, ok := t.cfg.Providers[name]; ok {
+						pcfg.Enabled = false
+						t.cfg.Providers[name] = pcfg
+					}
+					_ = config.Save(t.cfg)
+					t.renderPending = true
+				}
+			}
+		} else if t.settingsIndex > 0 {
+			t.settingsIndex--
+			t.renderPending = true
+		}
+	case KeyDown:
+		if t.settingsIndex < len(providers)-1 {
+			t.settingsIndex++
+			t.renderPending = true
+		}
+	case KeyEnter:
+		t.settingsKeyEdit = true
+		t.settingsKeyBuf = ""
+		t.renderPending = true
+	}
+}
+
+// testProviderPing runs a single synchronous ping against the first model of
+// the provider and reports the outcome.
+func (t *TUI) testProviderPing(provider string) string {
+	if t.registry == nil {
+		return "no registry"
+	}
+	var model *models.Model
+	for _, m := range t.registry.Snapshot() {
+		if m.Provider == provider && m.Endpoint != "" {
+			model = m
+			break
+		}
+	}
+	if model == nil {
+		return "no models"
+	}
+
+	body := `{"model":"` + model.UpstreamModelID + `","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`
+	req, err := http.NewRequest(http.MethodPost, model.Endpoint, stringsNewReader(body))
+	if err != nil {
+		return "err"
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if model.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+model.APIKey)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "fail"
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	switch resp.StatusCode {
+	case 200:
+		return "up"
+	case 401:
+		return "noauth"
+	case 403:
+		return "forbidden"
+	case 429:
+		return "ratelimit"
+	default:
+		return fmt.Sprintf("HTTP %d", resp.StatusCode)
+	}
+}
+
+// launchTarget best-effort launches the agent binary if installed.
+func launchTarget(binary string) {
+	if binary == "" {
+		return
+	}
+	if _, err := exec.LookPath(binary); err != nil {
+		return
+	}
+	_ = exec.Command(binary).Start()
 }
 
 func (t *TUI) cycleTierFilter() {
@@ -374,19 +777,34 @@ func (t *TUI) setSort(key string) {
 	t.renderPending = true
 }
 
-func (t *TUI) openTargetPicker() {
-	t.renderPending = true
-}
-
-func (t *TUI) handleSettingsInput(ev InputEvent) {
-	if ev.Key == KeyEsc || ev.Key == KeyRune && (ev.Rune == 'q' || ev.Rune == 'Q') {
-		t.showSettings = false
-		t.renderPending = true
-	}
-}
-
 func containsLower(s, sub string) bool {
 	return len(s) >= len(sub) && indexOf(s, sub) >= 0
+}
+
+func stringsTrimSpace(s string) string {
+	start := 0
+	for start < len(s) {
+		c := s[start]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			start++
+			continue
+		}
+		break
+	}
+	end := len(s)
+	for end > start {
+		c := s[end-1]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			end--
+			continue
+		}
+		break
+	}
+	return s[start:end]
+}
+
+func stringsNewReader(s string) *strings.Reader {
+	return strings.NewReader(s)
 }
 
 func indexOf(s, sub string) int {

@@ -63,6 +63,7 @@ type Engine struct {
 	running  bool
 	epoch    int64
 	models   map[string]*models.Model
+	registry *models.Registry
 }
 
 func NewEngine(onUpdate func()) *Engine {
@@ -108,6 +109,36 @@ func (e *Engine) SetModels(list []*models.Model) {
 		m[model.ID] = model
 	}
 	e.models = m
+}
+
+// SetRegistry associates the registry whose write lock protects model state
+// (spec §16.3). When set, all ping results and backoff counters are applied
+// under the registry lock.
+func (e *Engine) SetRegistry(registry *models.Registry) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.registry = registry
+}
+
+func (e *Engine) SetPool(pool *TransportPool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if pool != nil {
+		e.pool = pool
+	}
+}
+
+// apply routes a ping result through the registry write lock when available.
+func (e *Engine) apply(m *models.Model, r Result) {
+	e.mu.RLock()
+	registry := e.registry
+	e.mu.RUnlock()
+
+	if registry != nil {
+		registry.UpdateModel(m.ID, func(x *models.Model) { applyResultMut(x, r) })
+		return
+	}
+	applyResultMut(m, r)
 }
 
 func (e *Engine) Stop() {
@@ -166,6 +197,7 @@ func (e *Engine) PingAllOnce(initial bool) {
 	go func() {
 		for _, m := range modelsCopy {
 			if shouldSkip(m) {
+				e.markSkipped(m)
 				continue
 			}
 			work <- m
@@ -209,20 +241,32 @@ func skipRoundsFor(failures int) int {
 	}
 }
 
+// shouldSkip is a pure predicate: a model with >= 3 consecutive failures is
+// skipped for up to backoffRounds(failures) rounds. The counter is advanced
+// by the scheduler (markSkipped) under the registry lock, never here.
 func shouldSkip(m *models.Model) bool {
 	if m.FailStreak < 3 {
 		return false
 	}
-	if m.SkippedRounds >= skipRoundsFor(m.FailStreak) {
-		return false
+	return m.SkippedRounds < skipRoundsFor(m.FailStreak)
+}
+
+// markSkipped advances the skipped-round counter under the registry lock.
+func (e *Engine) markSkipped(m *models.Model) {
+	e.mu.RLock()
+	registry := e.registry
+	e.mu.RUnlock()
+
+	if registry != nil {
+		registry.UpdateModel(m.ID, func(x *models.Model) { x.SkippedRounds++ })
+		return
 	}
 	m.SkippedRounds++
-	return true
 }
 
 func (e *Engine) pingOne(m *models.Model, timeout time.Duration) {
 	if m.Endpoint == "" {
-		applyResult(m, Result{ModelID: m.ID, Status: "down", Err: errNoEndpoint})
+		e.apply(m, Result{ModelID: m.ID, Status: "down", Err: errNoEndpoint})
 		return
 	}
 
@@ -231,7 +275,7 @@ func (e *Engine) pingOne(m *models.Model, timeout time.Duration) {
 	body := `{"model":"` + m.UpstreamModelID + `","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`
 	req, err := http.NewRequest(http.MethodPost, m.Endpoint, strings.NewReader(body))
 	if err != nil {
-		applyResult(m, Result{ModelID: m.ID, Status: "down", Err: err})
+		e.apply(m, Result{ModelID: m.ID, Status: "down", Err: err})
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -251,7 +295,7 @@ func (e *Engine) pingOne(m *models.Model, timeout time.Duration) {
 		if isTimeout(err) {
 			status = "timeout"
 		}
-		applyResult(m, Result{ModelID: m.ID, Latency: elapsed, HTTPCode: 0, Status: status, Err: err})
+		e.apply(m, Result{ModelID: m.ID, Latency: elapsed, HTTPCode: 0, Status: status, Err: err})
 		return
 	}
 
@@ -259,7 +303,7 @@ func (e *Engine) pingOne(m *models.Model, timeout time.Duration) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
-	applyResult(m, Result{
+	e.apply(m, Result{
 		ModelID:  m.ID,
 		Latency:  elapsed,
 		HTTPCode: resp.StatusCode,

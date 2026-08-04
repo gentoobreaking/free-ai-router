@@ -57,9 +57,9 @@ func TestDiscoverModelsNonDiscoverable(t *testing.T) {
 func TestMergeDiscoveredModels(t *testing.T) {
 	mgr := NewManager()
 	mgr.providers["nvidia"] = &Provider{
-		Key:   "nvidia",
-		Name:  "NIM",
-		URL:   "https://integrate.api.nvidia.com/v1/chat/completions",
+		Key:  "nvidia",
+		Name: "NIM",
+		URL:  "https://integrate.api.nvidia.com/v1/chat/completions",
 		Models: []ModelEntry{
 			{ID: "nvidia/static-model", Label: "Static"},
 		},

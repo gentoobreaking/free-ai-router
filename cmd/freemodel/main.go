@@ -161,12 +161,15 @@ func runTUI(opts *cli.Options) error {
 		cfg.CodingOnly = false
 	}
 
+	applyRouterConfig(registry, cfg, opts)
+
 	t := tui.New(&tui.Config{
 		ScrollSortPauseMs: cfg.UI.ScrollSortPauseMs,
 		ForceClear:        os.Getenv("FREMODEL_TUI_FORCE_CLEAR") == "1",
 		ConfigPath:        os.Getenv("FREMODEL_CONFIG_PATH"),
 	})
 	t.SetRegistry(registry)
+	t.SetConfig(cfg)
 	return t.Run()
 }
 
@@ -185,7 +188,13 @@ func runServer(opts *cli.Options) error {
 		m.APIKey = config.ResolveAPIKey(m.Provider, cfg)
 	}
 
+	applyRouterConfig(registry, cfg, opts)
+
+	pool := ping.NewTransportPool()
+
 	engine := ping.NewEngine(nil)
+	engine.SetRegistry(registry)
+	engine.SetPool(pool)
 	engine.SetModels(registry.GetAll())
 	engine.Start()
 	defer engine.Stop()
@@ -201,9 +210,29 @@ func runServer(opts *cli.Options) error {
 
 	logEnabled := opts.Log || os.Getenv("FREMODEL_LOG") == "1"
 	srv := router.NewServer(registry, cfg, port, cli.Version, logEnabled)
+	srv.SetPool(pool)
 
 	log.Printf("freemodel router listening on 127.0.0.1:%d", port)
 	return srv.Start()
+}
+
+// applyRouterConfig propagates config-level selection rules into the registry
+// so router eligibility honors them (§3.2, §3.3).
+func applyRouterConfig(registry *models.Registry, cfg *config.Config, opts *cli.Options) {
+	registry.FlagCodingOnly(cfg.CodingOnly)
+
+	for _, banned := range cfg.BannedModels {
+		registry.BanModel(banned)
+	}
+
+	if opts.Ban != "" {
+		for _, banned := range strings.Split(opts.Ban, ",") {
+			banned = strings.TrimSpace(banned)
+			if banned != "" {
+				registry.BanModel(banned)
+			}
+		}
+	}
 }
 
 func runBest(opts *cli.Options) error {
@@ -216,6 +245,8 @@ func runBest(opts *cli.Options) error {
 	if err != nil {
 		return err
 	}
+
+	applyRouterConfig(registry, cfg, opts)
 
 	resolveKey := func(provider string) string {
 		return config.ResolveAPIKey(provider, cfg)

@@ -12,6 +12,7 @@ type RenderOptions struct {
 	Models         []*models.Model
 	SelectedIndex  int
 	SearchQuery    string
+	SearchActive   bool
 	TotalCount     int
 	SortKey        string
 	SortReverse    bool
@@ -127,7 +128,11 @@ func (r *Renderer) renderTable(opts *RenderOptions) {
 func (r *Renderer) renderFooter(opts *RenderOptions) {
 	r.builder.WriteString("\n")
 	r.builder.WriteString(Dim)
-	r.builder.WriteString(" ↑↓/jk:nav  PgUp/PgDn:page  /:search  Enter:configure  A:key  P:settings  ?:help  q:quit")
+	if opts.SearchActive {
+		r.builder.WriteString(" SEARCHING — type to filter, Enter: configure, ESC: clear ")
+	} else {
+		r.builder.WriteString(" ↑↓/jk:nav  PgUp/PgDn:page  /:search  Enter:configure  A:key  P:settings  ?:help  q:quit")
+	}
 	r.builder.WriteString(Reset)
 	r.builder.WriteString("\n")
 	r.builder.WriteString(fmt.Sprintf(" sort:%s%s  tier:%s  provider:%s  interval:%dms  codingOnly:%v",

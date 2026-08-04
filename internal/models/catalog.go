@@ -35,15 +35,16 @@ type Model struct {
 }
 
 type PingEntry struct {
-	Latency float64
+	Latency  float64
 	HTTPCode string
 	Status   string
 	At       int64
 }
 
 type Registry struct {
-	mu     sync.RWMutex
-	models map[string]*Model
+	mu         sync.RWMutex
+	models     map[string]*Model
+	codingOnly bool
 }
 
 func NewRegistry() *Registry {
@@ -96,6 +97,87 @@ func (r *Registry) ReplaceAll(models []*Model) {
 	for _, m := range models {
 		r.models[m.ID] = m
 	}
+}
+
+// Snapshot returns deep copies of all models so concurrent readers can
+// render/select without racing against ping workers writing to live models.
+func (r *Registry) Snapshot() []*Model {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]*Model, 0, len(r.models))
+	for _, m := range r.models {
+		result = append(result, copyModel(m))
+	}
+	return result
+}
+
+// UpdateModel applies fn to the live model under the registry write lock.
+func (r *Registry) UpdateModel(id string, fn func(m *Model)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if m, ok := r.models[id]; ok && fn != nil {
+		fn(m)
+	}
+}
+
+// WithModel invokes fn with the live model under the registry read lock.
+func (r *Registry) WithModel(id string, fn func(m *Model)) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if m, ok := r.models[id]; ok && fn != nil {
+		fn(m)
+	}
+}
+
+func copyModel(m *Model) *Model {
+	cp := *m
+	cp.Tags = append([]string(nil), m.Tags...)
+	cp.Pings = append([]PingEntry(nil), m.Pings...)
+	return &cp
+}
+
+func (r *Registry) FlagCodingOnly(enabled bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.codingOnly = enabled
+}
+
+func (r *Registry) CodingOnlyEnabled() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.codingOnly
+}
+
+// BanModel bans every model matching the ID exactly or by group short name.
+// Returns the number of models banned.
+func (r *Registry) BanModel(id string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, m := range r.models {
+		if m.ID == id || ResolveGroup(m.ID) == id {
+			if !m.Banned {
+				m.Banned = true
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func (r *Registry) UnbanModel(id string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, m := range r.models {
+		if m.ID == id || ResolveGroup(m.ID) == id {
+			if m.Banned {
+				m.Banned = false
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func parseContext(s string) string {

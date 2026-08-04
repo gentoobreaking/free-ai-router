@@ -149,6 +149,10 @@ func parseEscape(seq []byte) (InputEvent, bool) {
 			return InputEvent{Key: KeyHome}, true
 		case 'F':
 			return InputEvent{Key: KeyEnd}, true
+		case 'I':
+			return InputEvent{Key: KeyFocusIn}, true
+		case 'O':
+			return InputEvent{Key: KeyFocusOut}, true
 		}
 
 		if seq[2] == '5' && len(seq) >= 4 && seq[3] == '~' {

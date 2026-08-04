@@ -3,11 +3,11 @@ package tui
 import "fmt"
 
 const (
-	Reset      = "\033[0m"
-	Bold       = "\033[1m"
-	Dim        = "\033[2m"
-	Underline  = "\033[4m"
-	Reverse    = "\033[7m"
+	Reset     = "\033[0m"
+	Bold      = "\033[1m"
+	Dim       = "\033[2m"
+	Underline = "\033[4m"
+	Reverse   = "\033[7m"
 
 	Black   = "\033[30m"
 	Red     = "\033[31m"
@@ -49,15 +49,15 @@ func Colorize(text string, enabled bool) string {
 	return text
 }
 
-func CursorHome() string       { return "\033[H" }
-func CursorHide() string       { return "\033[?25l" }
-func CursorShow() string       { return "\033[?25h" }
-func ClearScreen() string      { return "\033[2J" }
-func ClearLine() string        { return "\033[2K" }
-func EnterAltScreen() string   { return "\033[?1049h" }
-func ExitAltScreen() string    { return "\033[?1049l" }
-func EnableFocus() string      { return "\033[?1004h" }
-func DisableFocus() string     { return "\033[?1004l" }
+func CursorHome() string     { return "\033[H" }
+func CursorHide() string     { return "\033[?25l" }
+func CursorShow() string     { return "\033[?25h" }
+func ClearScreen() string    { return "\033[2J" }
+func ClearLine() string      { return "\033[2K" }
+func EnterAltScreen() string { return "\033[?1049h" }
+func ExitAltScreen() string  { return "\033[?1049l" }
+func EnableFocus() string    { return "\033[?1004h" }
+func DisableFocus() string   { return "\033[?1004l" }
 func MoveTo(row, col int) string {
 	return fmt.Sprintf("\033[%d;%dH", row, col)
 }

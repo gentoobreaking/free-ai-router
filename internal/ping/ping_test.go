@@ -105,18 +105,19 @@ func TestShouldSkip(t *testing.T) {
 		t.Error("2 failures should not trigger backoff")
 	}
 
-	// 3 failures: skip 1 round
+	// 3 failures: skip allowed for 1 round (pure predicate)
 	m.FailStreak = 3
 	if !shouldSkip(m) {
-		t.Error("3 failures should trigger backoff")
+		t.Error("3 failures should allow backoff")
 	}
-	// after skipping the round, should not skip again until more failures
+	// after the scheduler advanced one skipped round, not allowed again
+	m.SkippedRounds = 1
 	if shouldSkip(m) {
 		t.Error("should not skip more than backoffRounds consecutive rounds")
 	}
 
 	// success resets the streak
-	applyResult(m, Result{ModelID: "test/model", Latency: 100000000, HTTPCode: 200, Status: "up"})
+	applyResultMut(m, Result{ModelID: "test/model", Latency: 100000000, HTTPCode: 200, Status: "up"})
 	if m.FailStreak != 0 {
 		t.Errorf("success should reset FailStreak, got %d", m.FailStreak)
 	}
@@ -146,7 +147,7 @@ func TestSkipRoundsFor(t *testing.T) {
 
 func TestApplyResult(t *testing.T) {
 	m := &models.Model{ID: "test/model"}
-	applyResult(m, Result{ModelID: "test/model", Latency: 1500000000, HTTPCode: 200, Status: "up"})
+	applyResultMut(m, Result{ModelID: "test/model", Latency: 1500000000, HTTPCode: 200, Status: "up"})
 
 	if m.Status != "up" {
 		t.Errorf("status should be up, got %s", m.Status)
@@ -164,7 +165,7 @@ func TestApplyResult(t *testing.T) {
 
 func TestApplyResultFailure(t *testing.T) {
 	m := &models.Model{ID: "test/model"}
-	applyResult(m, Result{ModelID: "test/model", HTTPCode: 429, Status: "ratelimit"})
+	applyResultMut(m, Result{ModelID: "test/model", HTTPCode: 429, Status: "ratelimit"})
 
 	if m.Status != "ratelimit" {
 		t.Errorf("status should be ratelimit, got %s", m.Status)

@@ -10,7 +10,10 @@ import (
 
 var errNoEndpoint = errors.New("no endpoint configured for model")
 
-func applyResult(m *models.Model, r Result) {
+// applyResultMut mutates model state from ping results. It is the low-level
+// unlocked implementation; callers must hold the registry write lock when
+// model state is shared (spec §16.3).
+func applyResultMut(m *models.Model, r Result) {
 	entry := models.PingEntry{
 		Latency:  float64(r.Latency) / float64(time.Millisecond),
 		HTTPCode: intToStr(r.HTTPCode),

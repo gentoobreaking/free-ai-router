@@ -146,7 +146,12 @@ func (m *Manager) DiscoverModels(providerKey string) ([]ModelEntry, error) {
 		return nil, nil
 	}
 
-	discoveryURL := p.BaseURL + "/v1/models"
+	// Google's models API lives under /v1beta/models, others use /v1/models.
+	discoveryPath := "/v1/models"
+	if providerKey == "googleai" {
+		discoveryPath = "/v1beta/models"
+	}
+	discoveryURL := p.BaseURL + discoveryPath
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(discoveryURL)
@@ -205,17 +210,17 @@ func extractBaseURL(url string) string {
 
 func EnvVarForProvider(provider string) string {
 	envMap := map[string]string{
-		"nvidia":           "NVIDIA_API_KEY",
-		"groq":             "GROQ_API_KEY",
-		"cerebras":         "CEREBRAS_API_KEY",
-		"opencode":         "OPENCODE_API_KEY",
-		"openrouter":       "OPENROUTER_API_KEY",
+		"nvidia":            "NVIDIA_API_KEY",
+		"groq":              "GROQ_API_KEY",
+		"cerebras":          "CEREBRAS_API_KEY",
+		"opencode":          "OPENCODE_API_KEY",
+		"openrouter":        "OPENROUTER_API_KEY",
 		"openai-compatible": "OPENAI_COMPATIBLE_API_KEY",
-		"ollama":           "OLLAMA_API_KEY",
-		"codestral":        "CODESTRAL_API_KEY",
-		"scaleway":         "SCALEWAY_API_KEY",
-		"kilocode":         "KILOCODE_API_KEY",
-		"googleai":         "GOOGLE_API_KEY",
+		"ollama":            "OLLAMA_API_KEY",
+		"codestral":         "CODESTRAL_API_KEY",
+		"scaleway":          "SCALEWAY_API_KEY",
+		"kilocode":          "KILOCODE_API_KEY",
+		"googleai":          "GOOGLE_API_KEY",
 	}
 
 	if env, ok := envMap[provider]; ok {

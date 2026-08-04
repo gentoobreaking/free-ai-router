@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,33 +11,55 @@ import (
 	"time"
 
 	"github.com/freemodel/router/internal/models"
+	"github.com/freemodel/router/internal/ping"
 )
 
 const MAX_PROACTIVE_RETRIES = 5
 const RateLimitCooldown = 60 * time.Second
+const retryBackoff = 50 * time.Millisecond
 
 type Router struct {
-	mu           sync.RWMutex
-	registry     *models.Registry
-	logger       *Logger
-	pinned       string
-	pinningMode  string
-	cooldowns    map[string]time.Time
-	modelGroups  map[string][]string
+	mu          sync.RWMutex
+	registry    *models.Registry
+	logger      *Logger
+	pool        *ping.TransportPool
+	pinned      string
+	pinningMode string
+	cooldowns   map[string]time.Time
+	modelGroups map[string][]string
 }
 
 type modelRequest struct {
-	Model       string `json:"model"`
-	Stream      bool   `json:"stream"`
+	Model  string `json:"model"`
+	Stream bool   `json:"stream"`
+}
+
+type chatMessage struct {
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	ToolCalls []struct {
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	} `json:"tool_calls"`
 }
 
 func NewRouter(registry *models.Registry, logger *Logger) *Router {
 	return &Router{
 		registry:    registry,
 		logger:      logger,
+		pool:        ping.NewTransportPool(),
 		pinningMode: "canonical",
 		cooldowns:   make(map[string]time.Time),
 		modelGroups: make(map[string][]string),
+	}
+}
+
+// SetPool shares the keep-alive transport pool across the ping engine and the
+// proxy so both reuse per-host connections (spec §7.4).
+func (r *Router) SetPool(pool *ping.TransportPool) {
+	if pool != nil {
+		r.pool = pool
 	}
 }
 
@@ -47,6 +70,12 @@ func (r *Router) SetPinned(modelID, mode string) {
 	if mode != "" {
 		r.pinningMode = mode
 	}
+}
+
+func (r *Router) Pinned() (string, string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.pinned, r.pinningMode
 }
 
 func (r *Router) ServeChatCompletions(w http.ResponseWriter, req *http.Request) {
@@ -83,36 +112,44 @@ func (r *Router) ServeChatCompletions(w http.ResponseWriter, req *http.Request) 
 			continue
 		}
 
-		ok, status, ttfb, err := r.forward(w, req, m, body, mReq.Stream, start)
-		if !ok || err != nil {
-			if err != nil {
-				lastErr = err
-			}
+		written, status, respBody, ttfb, fwdErr := r.forward(w, req, m, body, start)
+		if fwdErr != nil {
+			// Connection-level failure: retryable (§7.4)
+			lastErr = fwdErr
 			r.markFailure(m)
-			if status == http.StatusTooManyRequests {
-				r.cooldowns[m.ID] = time.Now().Add(RateLimitCooldown)
-			}
+			time.Sleep(retryBackoff)
 			continue
 		}
 
-		if status >= 500 || status == http.StatusTooManyRequests {
-			r.markFailure(m)
-			if status == http.StatusTooManyRequests {
-				r.cooldowns[m.ID] = time.Now().Add(RateLimitCooldown)
+		if written {
+			// Either 2xx (response streamed/copied) or a non-retryable
+			// upstream error proxied verbatim (401/403/404/400/422...).
+			entry := &LogEntry{
+				Timestamp: time.Now(),
+				Model:     m.ID,
+				Provider:  m.Provider,
+				Status:    status,
+				TTFB:      ttfb,
+				Duration:  time.Since(start),
 			}
-			lastErr = fmt.Errorf("upstream returned %d", status)
-			continue
+			if content, toolCalls := extractRequestInfo(body); content != "" || len(toolCalls) > 0 {
+				entry.Content = content
+				entry.ToolCalls = toolCalls
+			}
+			if usage := extractUsage(respBody); usage != nil {
+				entry.Usage = usage
+			}
+			r.logger.Log(entry)
+			return
 		}
 
-		r.logger.Log(&LogEntry{
-			Timestamp: time.Now(),
-			Model:     m.ID,
-			Provider:  m.Provider,
-			Status:    status,
-			TTFB:      ttfb,
-			Duration:  time.Since(start),
-		})
-		return
+		// Retryable upstream status (429 / 5xx) — spec §7.4
+		r.markFailure(m)
+		if status == http.StatusTooManyRequests {
+			r.cooldowns[m.ID] = time.Now().Add(RateLimitCooldown)
+		}
+		lastErr = fmt.Errorf("upstream %s returned %d", m.ID, status)
+		time.Sleep(retryBackoff)
 	}
 
 	if lastErr != nil {
@@ -130,12 +167,12 @@ func (r *Router) selectModels(requested string) []*models.Model {
 	pinningMode := r.pinningMode
 	r.mu.RUnlock()
 
-	all := r.registry.GetAll()
+	all := r.registry.Snapshot()
 
 	var pool []*models.Model
 	if pinned != "" {
 		if pinningMode == "exact" {
-			if m := r.registry.Get(pinned); m != nil && r.eligible(m) {
+			if m := snapshotByID(all, pinned); m != nil && r.eligible(m) {
 				pool = []*models.Model{m}
 			}
 		} else {
@@ -191,8 +228,20 @@ func (r *Router) selectModels(requested string) []*models.Model {
 	return pool
 }
 
+func snapshotByID(all []*models.Model, id string) *models.Model {
+	for _, m := range all {
+		if m.ID == id {
+			return m
+		}
+	}
+	return nil
+}
+
 func (r *Router) eligible(m *models.Model) bool {
 	if m.Disabled || m.Banned || m.Excluded {
+		return false
+	}
+	if r.registry.CodingOnlyEnabled() && !containsTag(m.Tags, "coding") {
 		return false
 	}
 	if m.Status != "up" {
@@ -218,13 +267,26 @@ func (r *Router) isCooldown(modelID string) bool {
 }
 
 func (r *Router) markFailure(m *models.Model) {
-	m.Status = "down"
+	r.registry.UpdateModel(m.ID, func(x *models.Model) { x.Status = "down" })
 }
 
-func (r *Router) forward(w http.ResponseWriter, req *http.Request, m *models.Model, body []byte, stream bool, start time.Time) (bool, int, time.Duration, error) {
-	upstreamReq, err := http.NewRequest(http.MethodPost, m.Endpoint, strings.NewReader(string(body)))
+// forward sends the request to upstream and returns how the call resolved:
+//   - err != nil        → connection-level failure, nothing written, retryable
+//   - written == true   → response delivered to the client (2xx success, or a
+//     non-retryable upstream error proxied verbatim); caller must stop
+//   - written == false  → retryable upstream status (429 / 5xx); nothing written
+//
+// respBody carries the upstream body for non-stream responses (used for
+// logging usage); it is nil for streaming responses.
+func (r *Router) forward(w http.ResponseWriter, req *http.Request, m *models.Model, body []byte, start time.Time) (bool, int, []byte, time.Duration, error) {
+	upstreamBody, err := rewriteModel(body, m.UpstreamModelID)
 	if err != nil {
-		return false, 0, 0, err
+		return false, 0, nil, 0, err
+	}
+
+	upstreamReq, err := http.NewRequest(http.MethodPost, m.Endpoint, bytes.NewReader(upstreamBody))
+	if err != nil {
+		return false, 0, nil, 0, err
 	}
 
 	upstreamReq.Header.Set("Content-Type", "application/json")
@@ -232,30 +294,41 @@ func (r *Router) forward(w http.ResponseWriter, req *http.Request, m *models.Mod
 		upstreamReq.Header.Set("Authorization", "Bearer "+m.APIKey)
 	}
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{
+		Transport: r.pool.Get(m.ProviderHost),
+		Timeout:   120 * time.Second,
+	}
 
 	resp, err := client.Do(upstreamReq)
 	if err != nil {
-		return false, 0, 0, err
+		return false, 0, nil, 0, err
 	}
 	defer resp.Body.Close()
 
 	ttfb := time.Since(start)
 
-	if resp.StatusCode >= 400 {
-		return true, resp.StatusCode, ttfb, fmt.Errorf("upstream %s returned %d", m.ID, resp.StatusCode)
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		// Retryable: failover to next best model (§7.4)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return false, resp.StatusCode, nil, ttfb, nil
 	}
 
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
-	if stream {
+	if resp.StatusCode >= 400 {
+		// Non-retryable (400/401/403/404/422...): proxy verbatim, no failover
+		_, _ = io.Copy(w, resp.Body)
+		return true, resp.StatusCode, nil, ttfb, nil
+	}
+
+	if isStreamRequest(body) {
 		buf := make([]byte, 4096)
 		for {
 			n, err := resp.Body.Read(buf)
 			if n > 0 {
 				if _, werr := w.Write(buf[:n]); werr != nil {
-					return true, resp.StatusCode, ttfb, nil
+					return true, resp.StatusCode, nil, ttfb, nil
 				}
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
@@ -265,11 +338,82 @@ func (r *Router) forward(w http.ResponseWriter, req *http.Request, m *models.Mod
 				break
 			}
 		}
-	} else {
-		_, _ = io.Copy(w, resp.Body)
+		return true, resp.StatusCode, nil, ttfb, nil
 	}
 
-	return true, resp.StatusCode, ttfb, nil
+	respBody, _ := io.ReadAll(resp.Body)
+	if _, werr := w.Write(respBody); werr != nil {
+		return true, resp.StatusCode, nil, ttfb, nil
+	}
+	return true, resp.StatusCode, respBody, ttfb, nil
+}
+
+// rewriteModel replaces the "model" field with the resolved upstream ID while
+// preserving every other field in the request body (§7.3 step 6).
+func rewriteModel(body []byte, upstreamID string) ([]byte, error) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return body, nil
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	payload["model"] = upstreamID
+	return json.Marshal(payload)
+}
+
+func isStreamRequest(body []byte) bool {
+	var mReq modelRequest
+	if err := json.Unmarshal(body, &mReq); err != nil {
+		return false
+	}
+	return mReq.Stream
+}
+
+func extractRequestInfo(body []byte) (string, []string) {
+	var payload struct {
+		Messages []chatMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", nil
+	}
+	var content string
+	var toolCalls []string
+	for _, msg := range payload.Messages {
+		if msg.Content != "" && content == "" {
+			content = msg.Content
+		}
+		for _, tc := range msg.ToolCalls {
+			if tc.Function.Name != "" {
+				toolCalls = append(toolCalls, tc.Function.Name)
+			}
+		}
+	}
+	return content, toolCalls
+}
+
+func extractUsage(body []byte) map[string]int {
+	if len(body) == 0 {
+		return nil
+	}
+	var payload struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+	if payload.Usage.TotalTokens == 0 && payload.Usage.PromptTokens == 0 && payload.Usage.CompletionTokens == 0 {
+		return nil
+	}
+	return map[string]int{
+		"promptTokens":     payload.Usage.PromptTokens,
+		"completionTokens": payload.Usage.CompletionTokens,
+		"totalTokens":      payload.Usage.TotalTokens,
+	}
 }
 
 func copyHeaders(dst, src http.Header) {

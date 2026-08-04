@@ -7,7 +7,12 @@ import (
 	"strings"
 )
 
-const Version = "v0.1.0"
+const defaultVersion = "v0.1.0"
+
+// Version is the single version source: the VERSION file at the repo/install
+// root when present, else the default. Kept in sync so the binary, /api/meta,
+// and update checks all report the same value.
+var Version = loadVersion()
 
 type Options struct {
 	Command      string
@@ -207,4 +212,16 @@ func EnvConfigPath() string {
 		return p
 	}
 	return ""
+}
+
+func loadVersion() string {
+	data, err := os.ReadFile("VERSION")
+	if err != nil {
+		return defaultVersion
+	}
+	v := strings.TrimSpace(string(data))
+	if v == "" {
+		return defaultVersion
+	}
+	return v
 }

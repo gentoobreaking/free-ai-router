@@ -10,13 +10,16 @@ import (
 const MaxLogEntries = 200
 
 type LogEntry struct {
-	Timestamp time.Time `json:"timestamp"`
-	Model     string    `json:"model"`
-	Provider  string    `json:"provider"`
-	Status    int       `json:"status"`
-	Duration  time.Duration `json:"durationMs"`
-	TTFB      time.Duration `json:"ttfbMs"`
-	Retries   []int     `json:"retries,omitempty"`
+	Timestamp time.Time      `json:"timestamp"`
+	Model     string         `json:"model"`
+	Provider  string         `json:"provider"`
+	Status    int            `json:"status"`
+	Duration  time.Duration  `json:"durationMs"`
+	TTFB      time.Duration  `json:"ttfbMs"`
+	Content   string         `json:"content,omitempty"`
+	ToolCalls []string       `json:"toolCalls,omitempty"`
+	Usage     map[string]int `json:"usage,omitempty"`
+	Retries   []int          `json:"retries,omitempty"`
 }
 
 type Logger struct {

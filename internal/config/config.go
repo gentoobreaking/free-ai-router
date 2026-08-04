@@ -12,41 +12,41 @@ import (
 )
 
 const ConfigFileName = ".freemodel-router.json"
-const ConfigDir = ".config"
 const LegacyConfigFileName = ".free-router.json"
+const EnvConfigPathVar = "FREMODEL_CONFIG_PATH"
 
 type Config struct {
-	APIKeys        map[string]interface{} `json:"apiKeys"`
-	Providers      map[string]ProviderConfig `json:"providers"`
-	BannedModels   []string                 `json:"bannedModels"`
-	AutoUpdate     AutoUpdateConfig         `json:"autoUpdate"`
-	MinSweScore    *float64                 `json:"minSweScore"`
-	ExcludedProviders []string              `json:"excludedProviders"`
-	PinningMode    string                   `json:"pinningMode"`
-	ModelTags      map[string][]string      `json:"modelTags"`
-	AutoPingEnabled bool                     `json:"autoPingEnabled"`
-	CodingOnly     bool                     `json:"codingOnly"`
-	UI             UIConfig                 `json:"ui"`
+	APIKeys           map[string]interface{}    `json:"apiKeys"`
+	Providers         map[string]ProviderConfig `json:"providers"`
+	BannedModels      []string                  `json:"bannedModels"`
+	AutoUpdate        AutoUpdateConfig          `json:"autoUpdate"`
+	MinSweScore       *float64                  `json:"minSweScore"`
+	ExcludedProviders []string                  `json:"excludedProviders"`
+	PinningMode       string                    `json:"pinningMode"`
+	ModelTags         map[string][]string       `json:"modelTags"`
+	AutoPingEnabled   bool                      `json:"autoPingEnabled"`
+	CodingOnly        bool                      `json:"codingOnly"`
+	UI                UIConfig                  `json:"ui"`
 }
 
 type ProviderConfig struct {
-	Enabled       bool     `json:"enabled"`
-	Name          string   `json:"name,omitempty"`
-	BaseURL       string   `json:"baseUrl,omitempty"`
-	ModelID       string   `json:"modelId,omitempty"`
-	DiscoverModels bool    `json:"discoverModels,omitempty"`
-	MaxTurns      int      `json:"maxTurns,omitempty"`
-	RefreshToken  string   `json:"refreshToken,omitempty"`
-	AuthMode      string   `json:"authMode,omitempty"`
+	Enabled        bool   `json:"enabled"`
+	Name           string `json:"name,omitempty"`
+	BaseURL        string `json:"baseUrl,omitempty"`
+	ModelID        string `json:"modelId,omitempty"`
+	DiscoverModels bool   `json:"discoverModels,omitempty"`
+	MaxTurns       int    `json:"maxTurns,omitempty"`
+	RefreshToken   string `json:"refreshToken,omitempty"`
+	AuthMode       string `json:"authMode,omitempty"`
 }
 
 type AutoUpdateConfig struct {
-	Enabled         bool      `json:"enabled"`
-	IntervalHours   int       `json:"intervalHours"`
-	LastCheckAt     string    `json:"lastCheckAt"`
-	LastUpdateAt    *string   `json:"lastUpdateAt"`
+	Enabled            bool    `json:"enabled"`
+	IntervalHours      int     `json:"intervalHours"`
+	LastCheckAt        string  `json:"lastCheckAt"`
+	LastUpdateAt       *string `json:"lastUpdateAt"`
 	LastVersionApplied *string `json:"lastVersionApplied"`
-	LastError       *string   `json:"lastError"`
+	LastError          *string `json:"lastError"`
 }
 
 type UIConfig struct {
@@ -74,25 +74,31 @@ var EnvOverrides = []EnvOverride{
 
 func DefaultConfig() *Config {
 	return &Config{
-		APIKeys:          make(map[string]interface{}),
-		Providers:        make(map[string]ProviderConfig),
-		BannedModels:     []string{},
-		AutoUpdate:       AutoUpdateConfig{Enabled: true, IntervalHours: 24},
+		APIKeys:           make(map[string]interface{}),
+		Providers:         make(map[string]ProviderConfig),
+		BannedModels:      []string{},
+		AutoUpdate:        AutoUpdateConfig{Enabled: true, IntervalHours: 24},
 		ExcludedProviders: []string{},
-		PinningMode:      "canonical",
-		ModelTags:        make(map[string][]string),
-		AutoPingEnabled:  true,
-		CodingOnly:       true,
-		UI:               UIConfig{ScrollSortPauseMs: 1500},
+		PinningMode:       "canonical",
+		ModelTags:         make(map[string][]string),
+		AutoPingEnabled:   true,
+		CodingOnly:        true,
+		UI:                UIConfig{ScrollSortPauseMs: 1500},
 	}
 }
 
+// ConfigPath resolves the config file location:
+//  1. $FREMODEL_CONFIG_PATH if set (spec §18)
+//  2. ~/.freemodel-router.json (spec §9.1)
 func ConfigPath() (string, error) {
+	if env := os.Getenv(EnvConfigPathVar); env != "" {
+		return env, nil
+	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(homeDir, ConfigDir, ConfigFileName), nil
+	return filepath.Join(homeDir, ConfigFileName), nil
 }
 
 func Load() (*Config, error) {
@@ -110,7 +116,13 @@ func Load() (*Config, error) {
 				if legacyErr == nil {
 					var cfg Config
 					if jsonErr := json.Unmarshal(legacyData, &cfg); jsonErr == nil {
-						return migrateLegacy(&cfg), nil
+						migrated := migrateLegacy(&cfg)
+						// Persist the migrated config at the new location
+						// so future loads skip legacy lookup (spec §22.2).
+						if saveErr := Save(migrated); saveErr == nil {
+							_ = os.Rename(legacyPath, legacyPath+".migrated")
+						}
+						return migrated, nil
 					}
 				}
 			}
@@ -134,9 +146,12 @@ func Save(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	return saveTo(path, cfg)
+}
 
+func saveTo(path string, cfg *Config) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 
