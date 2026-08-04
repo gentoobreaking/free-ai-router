@@ -47,87 +47,125 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) LoadSources(path string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
 
-	var sources map[string]SourceProvider
-	if err := json.Unmarshal(data, &sources); err != nil {
-		return err
-	}
+		var sources map[string]SourceProvider
+		if err := json.Unmarshal(data, &sources); err != nil {
+			return err
+		}
 
-	freeOpenRouterModels := m.fetchFreeOpenRouterModels()
-	clawLabsModels := m.fetchClawLabsModels()
+		freeOpenRouterModels := m.fetchFreeOpenRouterModels()
+		clawLabsModels := m.fetchClawLabsModels()
 
-	for key, src := range sources {
-		models := make([]ModelEntry, 0, len(src.Models))
-		for _, me := range src.Models {
-			if len(me) >= 2 {
-				id, _ := me[0].(string)
-				label, _ := me[1].(string)
-				context := ""
-				if len(me) >= 3 {
-					context, _ = me[2].(string)
+		for key, src := range sources {
+			models := make([]ModelEntry, 0, len(src.Models))
+			for _, me := range src.Models {
+				if len(me) >= 2 {
+					id, _ := me[0].(string)
+					label, _ := me[1].(string)
+					context := ""
+					if len(me) >= 3 {
+						context, _ = me[2].(string)
+					}
+					if key == "openrouter" && !freeOpenRouterModels[id] {
+						continue
+					}
+					models = append(models, ModelEntry{ID: id, Label: label, Context: context})
 				}
-				if key == "openrouter" && !freeOpenRouterModels[id] {
-					continue
-				}
-				models = append(models, ModelEntry{ID: id, Label: label, Context: context})
 			}
-		}
 
-		m.providers[key] = &Provider{
-			Key:          key,
-			Name:         src.Name,
-			URL:          src.URL,
-			Discoverable: src.Discoverable,
-			Models:       models,
-			Enabled:      true,
-			BaseURL:      extractBaseURL(src.URL),
-		}
-	}
-
-	// Merge ClawLabs aggregated models as a separate provider
-	m.providers["clawlabs"] = &Provider{
-		Key:          "clawlabs",
-		Name:         "ClawLabs Free Models",
-		URL:          "",
-		Discoverable: false,
-		Models:       clawLabsModels,
-		Enabled:      true,
-		BaseURL:      "",
-	}
-
-	// Discover and add relay sites from community forums
-	relaySites := ScannedRelaySites()
-	for _, site := range relaySites {
-		if !site.Healthy {
-			continue
-		}
-		providerKey := "relay-" + sanitizeRelayKey(site.BaseURL)
-		if _, exists := m.providers[providerKey]; !exists {
-			models, err := DiscoverModelsFromRelay(site.BaseURL, providerKey)
-			if err != nil || len(models) == 0 {
-				continue
-			}
-			m.providers[providerKey] = &Provider{
-				Key:          providerKey,
-				Name:         "Public Relay: " + site.BaseURL,
-				URL:          site.BaseURL + "/v1/chat/completions",
-				Discoverable: false,
+			m.providers[key] = &Provider{
+				Key:          key,
+				Name:         src.Name,
+				URL:          src.URL,
+				Discoverable: src.Discoverable,
 				Models:       models,
 				Enabled:      true,
-				BaseURL:      site.BaseURL,
+				BaseURL:      extractBaseURL(src.URL),
 			}
 		}
+
+		// Merge ClawLabs aggregated models as a separate provider
+		m.providers["clawlabs"] = &Provider{
+			Key:          "clawlabs",
+			Name:         "ClawLabs Free Models",
+			URL:          "",
+			Discoverable: false,
+			Models:       clawLabsModels,
+			Enabled:      true,
+			BaseURL:      "",
+		}
+
+		// Discover and add relay sites from community forums
+		relaySites := ScannedRelaySites()
+		for _, site := range relaySites {
+			if !site.Healthy {
+				continue
+			}
+			providerKey := "relay-" + sanitizeRelayKey(site.BaseURL)
+			if _, exists := m.providers[providerKey]; !exists {
+				models, err := DiscoverModelsFromRelay(site.BaseURL, providerKey)
+				if err != nil || len(models) == 0 {
+					continue
+				}
+				m.providers[providerKey] = &Provider{
+					Key:          providerKey,
+					Name:         "Public Relay: " + site.BaseURL,
+					URL:          site.BaseURL + "/v1/chat/completions",
+					Discoverable: false,
+					Models:       models,
+					Enabled:      true,
+					BaseURL:      site.BaseURL,
+				}
+			}
+		}
+
+		return nil
 	}
 
-	return nil
-}
+	// Auto-discover models from discoverable providers (called after LoadSources returns).
+	func (m *Manager) AutoDiscoverModels() {
+		m.mu.RLock()
+		providerKeys := make([]string, 0, len(m.providers))
+		for key := range m.providers {
+			providerKeys = append(providerKeys, key)
+		}
+		m.mu.RUnlock()
+
+		for _, key := range providerKeys {
+			p := m.GetProvider(key)
+			if p == nil || !p.Discoverable || p.BaseURL == "" {
+				continue
+			}
+			discovered, err := m.DiscoverModels(key)
+			if err != nil {
+				continue
+			}
+			if len(discovered) == 0 {
+				continue
+			}
+			m.mu.Lock()
+			prov, ok := m.providers[key]
+			if ok {
+				existing := make(map[string]bool, len(prov.Models))
+				for _, em := range prov.Models {
+					existing[em.ID] = true
+				}
+				for _, dm := range discovered {
+					if !existing[dm.ID] {
+						prov.Models = append(prov.Models, dm)
+					}
+				}
+			}
+			m.mu.Unlock()
+		}
+	}
 
 // sanitizeRelayKey converts a URL to a safe provider key
 func sanitizeRelayKey(baseURL string) string {

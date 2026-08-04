@@ -76,6 +76,8 @@ func buildRegistry() (*models.Registry, *models.TagManager, *providers.Manager, 
 		return nil, nil, nil, fmt.Errorf("failed to load sources: %w", err)
 	}
 
+	provMgr.AutoDiscoverModels()
+
 	registry := models.NewRegistry()
 	registry.LoadFromSources(provMgr)
 
