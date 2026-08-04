@@ -43,6 +43,25 @@ func (r *Renderer) Render(opts *RenderOptions) string {
 	return r.builder.String()
 }
 
+func visualLen(s string) int {
+	n := 0
+	inEscape := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if r == 'm' || r == 'H' || r == 'h' || r == 'l' || r == 'J' {
+				inEscape = false
+			}
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 func (r *Renderer) renderHeader(opts *RenderOptions) {
 	width := opts.Width
 	if width < 60 {
@@ -52,51 +71,45 @@ func (r *Renderer) renderHeader(opts *RenderOptions) {
 	r.builder.WriteString(BorderRow(width - 2))
 	r.builder.WriteString("\n")
 
+	title := " freemodel-router "
+	tag := ""
+	if opts.CodingOnly {
+		tag = ProviderTag("ready") + " "
+	}
+	available := width - 2 - visualLen(title) - visualLen(tag)
 	r.builder.WriteString("│")
 	r.builder.WriteString(Bold)
-	r.builder.WriteString(" freemodel-router ")
+	r.builder.WriteString(title)
 	r.builder.WriteString(Reset)
-
-	if opts.CodingOnly {
-		r.builder.WriteString(ProviderTag("ready"))
-		r.builder.WriteString(" ")
-	}
-
-	remaining := width - 2 - len(" freemodel-router ") - 2
-	if opts.CodingOnly {
-		remaining -= len(ProviderTag("ready")) + 1
-	}
-	r.builder.WriteString(strings.Repeat("─", remaining))
+	r.builder.WriteString(tag)
+	r.builder.WriteString(strings.Repeat("─", available))
 	r.builder.WriteString("│\n")
 
-	r.builder.WriteString("│")
-	r.builder.WriteString(" Model Search  ")
-	r.builder.WriteString("/" + opts.SearchQuery)
-	spaces := width - 2 - len(" Model Search  ") - len("/"+opts.SearchQuery) - len("  ") - len(fmt.Sprintf("%d/%d models", len(opts.Models), opts.TotalCount))
-	if spaces < 1 {
-		spaces = 1
+	searchContent := " Model Search  /" + opts.SearchQuery + "  " + fmt.Sprintf("%d/%d models", len(opts.Models), opts.TotalCount)
+	searchPadding := width - 2 - visualLen(searchContent)
+	if searchPadding < 1 {
+		searchPadding = 1
 	}
-	r.builder.WriteString(strings.Repeat(" ", spaces))
-	r.builder.WriteString(fmt.Sprintf("%d/%d models", len(opts.Models), opts.TotalCount))
-	r.builder.WriteString(" │\n")
+	r.builder.WriteString("│")
+	r.builder.WriteString(searchContent)
+	r.builder.WriteString(strings.Repeat(" ", searchPadding))
+	r.builder.WriteString("│\n")
 
 	if opts.SelectedIndex >= 0 && opts.SelectedIndex < len(opts.Models) {
 		m := opts.Models[opts.SelectedIndex]
-		r.builder.WriteString("│ Selected: ")
-		r.builder.WriteString(Color(m.ID, BrightCyan))
-		r.builder.WriteString("  ")
-		r.builder.WriteString(fmt.Sprintf("SWE:%.1f%%", m.QualityScore*100))
+		selectedPrefix := "│ Selected: "
+		sweText := fmt.Sprintf("SWE:%.1f%%", m.QualityScore*100)
+		codingTag := ""
 		if hasTag(m.Tags, "coding") {
-			r.builder.WriteString("  ")
-			r.builder.WriteString(Color("Code:✓", Green))
+			codingTag = "  " + Color("Code:✓", Green)
 		}
-		padding := width - 2 - len("│ Selected: ") - len(Color(m.ID, BrightCyan)) - len("  ") - len(fmt.Sprintf("SWE:%.1f%%", m.QualityScore*100))
-		if hasTag(m.Tags, "coding") {
-			padding -= len("  ") + len(Color("Code:✓", Green))
+		selectedContent := selectedPrefix + Color(m.ID, BrightCyan) + "  " + sweText + codingTag
+		selectedPadding := width - 2 - visualLen(selectedContent)
+		if selectedPadding < 1 {
+			selectedPadding = 1
 		}
-		if padding > 0 {
-			r.builder.WriteString(strings.Repeat(" ", padding))
-		}
+		r.builder.WriteString(selectedContent)
+		r.builder.WriteString(strings.Repeat(" ", selectedPadding))
 		r.builder.WriteString("│\n")
 	}
 
@@ -113,8 +126,11 @@ func (r *Renderer) renderTable(opts *RenderOptions) {
 	r.builder.WriteString(BorderRow(width - 2))
 	r.builder.WriteString("\n")
 
-	header := fmt.Sprintf("│ %-4s │ %-6s │ %-13s │ %-34s │ %-7s │ %-6s │ %8s │ %8s │ %6s │ %-16s │\n",
-		"#", "Tier", "Provider", "Model", "Ctx", "Bench", "Avg", "Lat", "Up%", "Verdict")
+	header := fmt.Sprintf("│ %-4s │ %s │ %-13s │ %-34s │ %-7s │ %-6s │ %8s │ %8s │ %6s │ %s │\n",
+		"#",
+		coloredCell("Tier", 6, Bold),
+		"Provider", "Model", "Ctx", "Bench", "Avg", "Lat", "Up%",
+		coloredCell("Verdict", 16, Bold))
 	r.builder.WriteString(Bold)
 	r.builder.WriteString(header)
 	r.builder.WriteString(Reset)
@@ -175,23 +191,21 @@ func (r *Renderer) renderFooter(opts *RenderOptions) {
 	r.builder.WriteString(SeparatorRow(width - 2))
 	r.builder.WriteString("\n")
 
+	var helpText string
+	if opts.SearchActive {
+		helpText = " SEARCHING — type to filter, Enter: configure, ESC: clear "
+	} else {
+		helpText = " ↑↓/jk:nav  PgUp/PgDn:page  /:search  Enter:configure  A:key  P:settings  ?:help  q:quit"
+	}
+	helpPadding := width - 2 - visualLen(helpText)
+	if helpPadding < 1 {
+		helpPadding = 1
+	}
 	r.builder.WriteString("│")
 	r.builder.WriteString(Dim)
-	if opts.SearchActive {
-		r.builder.WriteString(" SEARCHING — type to filter, Enter: configure, ESC: clear ")
-	} else {
-		r.builder.WriteString(" ↑↓/jk:nav  PgUp/PgDn:page  /:search  Enter:configure  A:key  P:settings  ?:help  q:quit")
-	}
+	r.builder.WriteString(helpText)
 	r.builder.WriteString(Reset)
-	padding := width - 2 - len("│")
-	if opts.SearchActive {
-		padding = width - 2 - len("│ SEARCHING — type to filter, Enter: configure, ESC: clear ")
-	} else {
-		padding = width - 2 - len("│ ↑↓/jk:nav  PgUp/PgDn:page  /:search  Enter:configure  A:key  P:settings  ?:help  q:quit")
-	}
-	if padding > 0 {
-		r.builder.WriteString(strings.Repeat(" ", padding))
-	}
+	r.builder.WriteString(strings.Repeat(" ", helpPadding))
 	r.builder.WriteString("│\n")
 
 	sortLine := fmt.Sprintf(" sort:%s%s  tier:%s  provider:%s  interval:%dms  codingOnly:%v",
@@ -201,14 +215,15 @@ func (r *Renderer) renderFooter(opts *RenderOptions) {
 		opts.ProviderFilter,
 		opts.IntervalMs,
 		opts.CodingOnly)
+	sortPadding := width - 2 - visualLen(sortLine)
+	if sortPadding < 1 {
+		sortPadding = 1
+	}
 	r.builder.WriteString("│")
 	r.builder.WriteString(Dim)
 	r.builder.WriteString(sortLine)
 	r.builder.WriteString(Reset)
-	padding = width - 2 - len("│") - len(sortLine)
-	if padding > 0 {
-		r.builder.WriteString(strings.Repeat(" ", padding))
-	}
+	r.builder.WriteString(strings.Repeat(" ", sortPadding))
 	r.builder.WriteString("│\n")
 
 	r.builder.WriteString(BorderRowBottom(width - 2))
