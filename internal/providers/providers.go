@@ -2,7 +2,6 @@ package providers
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -103,7 +102,42 @@ func (m *Manager) LoadSources(path string) error {
 		BaseURL:      "",
 	}
 
+	// Discover and add relay sites from community forums
+	relaySites := ScannedRelaySites()
+	for _, site := range relaySites {
+		if !site.Healthy {
+			continue
+		}
+		providerKey := "relay-" + sanitizeRelayKey(site.BaseURL)
+		if _, exists := m.providers[providerKey]; !exists {
+			models, err := DiscoverModelsFromRelay(site.BaseURL, providerKey)
+			if err != nil || len(models) == 0 {
+				continue
+			}
+			m.providers[providerKey] = &Provider{
+				Key:          providerKey,
+				Name:         "Public Relay: " + site.BaseURL,
+				URL:          site.BaseURL + "/v1/chat/completions",
+				Discoverable: false,
+				Models:       models,
+				Enabled:      true,
+				BaseURL:      site.BaseURL,
+			}
+		}
+	}
+
 	return nil
+}
+
+// sanitizeRelayKey converts a URL to a safe provider key
+func sanitizeRelayKey(baseURL string) string {
+	// Remove protocol and replace special chars
+	s := strings.TrimPrefix(baseURL, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, ".", "-")
+	s = strings.ReplaceAll(s, ":", "-")
+	return s
 }
 
 func (m *Manager) fetchFreeOpenRouterModels() map[string]bool {
@@ -347,63 +381,6 @@ func EnvVarForProvider(provider string) string {
 	}
 
 	return ""
-}
-
-// EnvVarForNewAPI returns the env var name for a new-api instance.
-// new-api instances are configured via NEW_API_API_KEY or NEW_API_BASE_URL.
-func EnvVarForNewAPI() string {
-	return "NEW_API_API_KEY"
-}
-
-// DiscoverNewApiModels fetches models from a new-api instance.
-// new-api implements the OpenAI-compatible /v1/models endpoint.
-func DiscoverNewApiModels(baseURL string) ([]ModelEntry, error) {
-	discoveryURL := baseURL + "/v1/models"
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(discoveryURL)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("new-api returned %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Data []struct {
-			ID         string `json:"id"`
-			OwnedByID  string `json:"owned_by"`
-			Permission []struct {
-				ID string `json:"id"`
-			} `json:"permission"`
-			ContextLength int `json:"context_length"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	var models []ModelEntry
-	for _, d := range result.Data {
-		id := d.ID
-		if id == "" {
-			continue
-		}
-		context := ""
-		if d.ContextLength > 0 {
-			context = fmt.Sprintf("%dk", d.ContextLength/1000)
-		}
-		models = append(models, ModelEntry{
-			ID:      id,
-			Label:   id,
-			Context: context,
-		})
-	}
-
-	return models, nil
 }
 
 // DataDir resolves the directory containing the data/ folder:

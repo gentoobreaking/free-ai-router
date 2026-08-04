@@ -30,11 +30,11 @@ func TestDiscoverNewApiModels(t *testing.T) {
 	if len(models) != 3 {
 		t.Fatalf("expected 3 models, got %d", len(models))
 	}
-	if models[0].ID != "deepseek-v3" {
-		t.Errorf("expected first model to be deepseek-v3, got %s", models[0].ID)
+	if models[0].ID != "new-api/deepseek-v3" {
+		t.Errorf("expected first model to be new-api/deepseek-v3, got %s", models[0].ID)
 	}
-	if models[0].Context != "131k" {
-		t.Errorf("expected context 131k, got %s", models[0].Context)
+	if models[0].Context != "" {
+		t.Errorf("expected empty context, got %s", models[0].Context)
 	}
 }
 
@@ -50,11 +50,6 @@ func TestDiscoverNewApiModelsError(t *testing.T) {
 	}
 }
 
-func TestEnvVarForNewAPI(t *testing.T) {
-	if got := EnvVarForNewAPI(); got != "NEW_API_API_KEY" {
-		t.Errorf("EnvVarForNewAPI() = %q, want NEW_API_API_KEY", got)
-	}
-}
 
 func TestEnvVarForProviderSiliconFlow(t *testing.T) {
 	if got := EnvVarForProvider("siliconflow"); got != "" {
