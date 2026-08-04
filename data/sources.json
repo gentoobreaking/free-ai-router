@@ -392,27 +392,97 @@
   },
   "pollinations": {
     "name": "Pollinations AI",
-    "url": "https://pollinations.ai/api/v1/chat/completions",
+    "url": "https://gen.pollinations.ai/v1/chat/completions",
     "discoverable": false,
     "models": [
       [
-        "pollinations/mistral-nemo",
-        "Mistral Nemo",
+        "pollinations/openai",
+        "OpenAI",
         "128k"
       ],
       [
-        "pollinations/mistral-small",
+        "pollinations/openai-fast",
+        "OpenAI Fast",
+        "128k"
+      ],
+      [
+        "pollinations/gpt-oss",
+        "GPT OSS",
+        "128k"
+      ],
+      [
+        "pollinations/deepseek",
+        "DeepSeek",
+        "128k"
+      ],
+      [
+        "pollinations/deepseek-pro",
+        "DeepSeek Pro",
+        "128k"
+      ],
+      [
+        "pollinations/gemini",
+        "Gemini",
+        "128k"
+      ],
+      [
+        "pollinations/gemini-3-flash",
+        "Gemini 3 Flash",
+        "128k"
+      ],
+      [
+        "pollinations/gemini-flash-lite-3.5",
+        "Gemini Flash Lite 3.5",
+        "128k"
+      ],
+      [
+        "pollinations/gemini-fast",
+        "Gemini Fast",
+        "128k"
+      ],
+      [
+        "pollinations/mistral",
+        "Mistral",
+        "128k"
+      ],
+      [
+        "pollinations/mistral-small-3.2",
         "Mistral Small 3.2",
         "128k"
       ],
       [
-        "pollinations/gemini-2.0-flash",
-        "Gemini 2.0 Flash",
-        "1048576k"
+        "pollinations/qwen-coder",
+        "Qwen Coder",
+        "128k"
       ],
       [
-        "pollinations/openai-large",
-        "GPT-4o",
+        "pollinations/kimi-k3",
+        "Kimi K3",
+        "128k"
+      ],
+      [
+        "pollinations/claude",
+        "Claude",
+        "200k"
+      ],
+      [
+        "pollinations/claude-fast",
+        "Claude Fast",
+        "200k"
+      ],
+      [
+        "pollinations/claude-sonnet-5",
+        "Claude Sonnet 5",
+        "200k"
+      ],
+      [
+        "pollinations/command-a-plus",
+        "Command A Plus",
+        "128k"
+      ],
+      [
+        "pollinations/mercury",
+        "Mercury",
         "128k"
       ]
     ]

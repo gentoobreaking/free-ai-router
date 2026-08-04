@@ -34,24 +34,24 @@ func TestFetchClawLabsModelsReturnsEntries(t *testing.T) {
 	// Should always have Pollinations AI models
 	foundPollinations := false
 	for _, e := range entries {
-		if e.ID == "pollinations/mistral-nemo" {
+		if e.ID == "pollinations/openai" {
 			foundPollinations = true
 			break
 		}
 	}
 	if !foundPollinations {
-		t.Error("fetchClawLabsModels should include pollinations/mistral-nemo")
+		t.Error("fetchClawLabsModels should include pollinations/openai")
 	}
 
 	foundGPT4o := false
 	for _, e := range entries {
-		if e.ID == "pollinations/openai-large" {
+		if e.ID == "pollinations/gpt-oss" {
 			foundGPT4o = true
 			break
 		}
 	}
 	if !foundGPT4o {
-		t.Error("fetchClawLabsModels should include pollinations/openai-large")
+		t.Error("fetchClawLabsModels should include pollinations/gpt-oss")
 	}
 }
 
@@ -85,7 +85,7 @@ func TestLoadSourcesIncludesClawLabs(t *testing.T) {
 	// Should include OpenRouter free models and Pollinations AI
 	hasPollinations := false
 	for _, m := range clawLabs.Models {
-		if m.ID == "pollinations/mistral-nemo" {
+		if m.ID == "pollinations/openai" {
 			hasPollinations = true
 			break
 		}

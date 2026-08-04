@@ -169,10 +169,24 @@ func (m *Manager) fetchClawLabsModels() []ModelEntry {
 
 	// 2. Add Pollinations AI static models (no auth, unlimited)
 	pollinations := []ModelEntry{
-		{ID: "pollinations/mistral-nemo", Label: "Mistral Nemo", Context: "128k"},
-		{ID: "pollinations/mistral-small", Label: "Mistral Small 3.2", Context: "128k"},
-		{ID: "pollinations/gemini-2.0-flash", Label: "Gemini 2.0 Flash", Context: "1048576k"},
-		{ID: "pollinations/openai-large", Label: "GPT-4o", Context: "128k"},
+		{ID: "pollinations/openai", Label: "OpenAI", Context: "128k"},
+		{ID: "pollinations/openai-fast", Label: "OpenAI Fast", Context: "128k"},
+		{ID: "pollinations/gpt-oss", Label: "GPT OSS", Context: "128k"},
+		{ID: "pollinations/deepseek", Label: "DeepSeek", Context: "128k"},
+		{ID: "pollinations/deepseek-pro", Label: "DeepSeek Pro", Context: "128k"},
+		{ID: "pollinations/gemini", Label: "Gemini", Context: "128k"},
+		{ID: "pollinations/gemini-3-flash", Label: "Gemini 3 Flash", Context: "128k"},
+		{ID: "pollinations/gemini-flash-lite-3.5", Label: "Gemini Flash Lite 3.5", Context: "128k"},
+		{ID: "pollinations/gemini-fast", Label: "Gemini Fast", Context: "128k"},
+		{ID: "pollinations/mistral", Label: "Mistral", Context: "128k"},
+		{ID: "pollinations/mistral-small-3.2", Label: "Mistral Small 3.2", Context: "128k"},
+		{ID: "pollinations/qwen-coder", Label: "Qwen Coder", Context: "128k"},
+		{ID: "pollinations/kimi-k3", Label: "Kimi K3", Context: "128k"},
+		{ID: "pollinations/claude", Label: "Claude", Context: "200k"},
+		{ID: "pollinations/claude-fast", Label: "Claude Fast", Context: "200k"},
+		{ID: "pollinations/claude-sonnet-5", Label: "Claude Sonnet 5", Context: "200k"},
+		{ID: "pollinations/command-a-plus", Label: "Command A Plus", Context: "128k"},
+		{ID: "pollinations/mercury", Label: "Mercury", Context: "128k"},
 	}
 	entries = append(entries, pollinations...)
 
