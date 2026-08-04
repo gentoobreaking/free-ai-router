@@ -1,15 +1,14 @@
 package ping
 
 import (
-	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/freemodel/router/internal/models"
+	"github.com/freemodel/router/internal/providers"
 )
 
 const (
@@ -347,19 +346,14 @@ func (e *Engine) pingOne(m *models.Model, timeout time.Duration) {
 // pingPollinationsText pings the Pollinations /text endpoint without auth.
 // Returns true if the ping was handled, false to fall back to normal ping.
 func (e *Engine) pingPollinationsText(m *models.Model, timeout time.Duration) bool {
-	mappedModel := m.ID
-	if idx := strings.Index(m.ID, "/"); idx > 0 {
-		mappedModel = m.ID[idx+1:]
-	}
+	start := time.Now()
 
-	prompt := "hi"
-	testURL := fmt.Sprintf("https://text.pollinations.ai/%s?model=%s",
-		url.PathEscape(prompt), url.QueryEscape(mappedModel))
+	testURL := providers.BuildPollinationsTextURL("hi", m.ID)
 
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(testURL)
 	if err != nil {
-		elapsed := time.Since(time.Now())
+		elapsed := time.Since(start)
 		status := "down"
 		if isTimeout(err) {
 			status = "timeout"
@@ -368,7 +362,7 @@ func (e *Engine) pingPollinationsText(m *models.Model, timeout time.Duration) bo
 		return true
 	}
 
-	elapsed := time.Since(time.Now())
+	elapsed := time.Since(start)
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
