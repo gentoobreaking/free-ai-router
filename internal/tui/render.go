@@ -63,12 +63,12 @@ func visualLen(s string) int {
 }
 
 func (r *Renderer) renderHeader(opts *RenderOptions) {
-	width := opts.Width
-	if width < 60 {
-		width = 60
+	w := opts.Width
+	if w < tableWidth {
+		w = tableWidth
 	}
 
-	r.builder.WriteString(BorderRow(width - 2))
+	r.builder.WriteString(BorderRow(w - 2))
 	r.builder.WriteString("\n")
 
 	title := " freemodel-router "
@@ -76,7 +76,7 @@ func (r *Renderer) renderHeader(opts *RenderOptions) {
 	if opts.CodingOnly {
 		tag = ProviderTag("ready") + " "
 	}
-	available := width - 2 - visualLen(title) - visualLen(tag)
+	available := w - 2 - visualLen(title) - visualLen(tag)
 	r.builder.WriteString("│")
 	r.builder.WriteString(Bold)
 	r.builder.WriteString(title)
@@ -86,7 +86,7 @@ func (r *Renderer) renderHeader(opts *RenderOptions) {
 	r.builder.WriteString("│\n")
 
 	searchContent := " Model Search  /" + opts.SearchQuery + "  " + fmt.Sprintf("%d/%d models", len(opts.Models), opts.TotalCount)
-	searchPadding := width - 2 - visualLen(searchContent)
+	searchPadding := w - 2 - visualLen(searchContent)
 	if searchPadding < 1 {
 		searchPadding = 1
 	}
@@ -104,7 +104,7 @@ func (r *Renderer) renderHeader(opts *RenderOptions) {
 			codingTag = "  " + Color("Code:✓", Green)
 		}
 		selectedContent := selectedPrefix + Color(m.ID, BrightCyan) + "  " + sweText + codingTag
-		selectedPadding := width - 2 - visualLen(selectedContent)
+		selectedPadding := w - 2 - visualLen(selectedContent)
 		if selectedPadding < 1 {
 			selectedPadding = 1
 		}
@@ -113,17 +113,19 @@ func (r *Renderer) renderHeader(opts *RenderOptions) {
 		r.builder.WriteString("│\n")
 	}
 
-	r.builder.WriteString(SeparatorRow(width - 2))
+	r.builder.WriteString(SeparatorRow(w - 2))
 	r.builder.WriteString("\n")
 }
 
+const tableWidth = 139
+
 func (r *Renderer) renderTable(opts *RenderOptions) {
-	width := opts.Width
-	if width < 60 {
-		width = 60
+	w := opts.Width
+	if w < tableWidth {
+		w = tableWidth
 	}
 
-	r.builder.WriteString(BorderRow(width - 2))
+	r.builder.WriteString(BorderRow(w - 2))
 	r.builder.WriteString("\n")
 
 	header := fmt.Sprintf("│ %-4s │ %s │ %-13s │ %-34s │ %-7s │ %-6s │ %8s │ %8s │ %6s │ %s │\n",
@@ -135,7 +137,7 @@ func (r *Renderer) renderTable(opts *RenderOptions) {
 	r.builder.WriteString(header)
 	r.builder.WriteString(Reset)
 
-	r.builder.WriteString(SeparatorRow(width - 2))
+	r.builder.WriteString(SeparatorRow(w - 2))
 	r.builder.WriteString("\n")
 
 	visibleRows := opts.Height - 14
@@ -178,17 +180,17 @@ func (r *Renderer) renderTable(opts *RenderOptions) {
 		}
 	}
 
-	r.builder.WriteString(BorderRowBottom(width - 2))
+	r.builder.WriteString(BorderRowBottom(w - 2))
 	r.builder.WriteString("\n")
 }
 
 func (r *Renderer) renderFooter(opts *RenderOptions) {
-	width := opts.Width
-	if width < 60 {
-		width = 60
+	w := opts.Width
+	if w < tableWidth {
+		w = tableWidth
 	}
 
-	r.builder.WriteString(SeparatorRow(width - 2))
+	r.builder.WriteString(SeparatorRow(w - 2))
 	r.builder.WriteString("\n")
 
 	var helpText string
@@ -197,7 +199,7 @@ func (r *Renderer) renderFooter(opts *RenderOptions) {
 	} else {
 		helpText = " ↑↓/jk:nav  PgUp/PgDn:page  /:search  Enter:configure  A:key  P:settings  ?:help  q:quit"
 	}
-	helpPadding := width - 2 - visualLen(helpText)
+	helpPadding := w - 2 - visualLen(helpText)
 	if helpPadding < 1 {
 		helpPadding = 1
 	}
@@ -215,7 +217,7 @@ func (r *Renderer) renderFooter(opts *RenderOptions) {
 		opts.ProviderFilter,
 		opts.IntervalMs,
 		opts.CodingOnly)
-	sortPadding := width - 2 - visualLen(sortLine)
+	sortPadding := w - 2 - visualLen(sortLine)
 	if sortPadding < 1 {
 		sortPadding = 1
 	}
@@ -226,7 +228,7 @@ func (r *Renderer) renderFooter(opts *RenderOptions) {
 	r.builder.WriteString(strings.Repeat(" ", sortPadding))
 	r.builder.WriteString("│\n")
 
-	r.builder.WriteString(BorderRowBottom(width - 2))
+	r.builder.WriteString(BorderRowBottom(w - 2))
 	r.builder.WriteString("\n")
 }
 
