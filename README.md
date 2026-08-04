@@ -151,6 +151,8 @@ Config export/import uses `mrconf:v1:<base64url>` token format, compatible with 
 | `OPENROUTER_API_KEY` | - | OpenRouter API key |
 | `OPENCODE_API_KEY` | - | OpenCode Zen API key |
 | `GOOGLE_API_KEY` | - | Google AI API key |
+| `NEW_API_API_KEY` | - | New-API gateway API key (Chinese providers) |
+| `SILICONFLOW_API_KEY` | - | SiliconFlow API key (Chinese models) |
 
 ## Docker
 
@@ -201,6 +203,74 @@ freemodel-router (Go binary)
 │   └── model-aliases.json  # Alias to canonical ID mapping
 └── go.mod
 ```
+
+## Model Aggregation Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Model Aggregation Pipeline                    │
+└─────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────┐    ┌──────────────────────────┐
+  │ data/        │    │   Provider Discovery     │
+  │ sources.json │───▶│   (at startup)          │
+  └──────────────┘    └────────┬─────────────────┘
+                                │
+         ┌──────────────────────┼──────────────────────┐
+         ▼                      ▼                      ▼
+  ┌───────────┐         ┌──────────────┐       ┌──────────────┐
+  │ Static    │         │ ClawLabs AI  │       │ Dynamic      │
+  │ Models    │         │ Aggregation  │       │ Discovery    │
+  │ (sources) │         │              │       │ (/v1/models)  │
+  └─────┬─────┘         └──────┬───────┘       └──────┬───────┘
+         │                      │                      │
+         │            ┌────────┴────────┐             │
+         │            │ OpenRouter API  │             │
+         │            │ (public, no auth)│             │
+         │            │ Filter:         │             │
+         │            │ pricing.prompt  │             │
+         │            │   === "0" &&    │             │
+         │            │ pricing.completion│            │
+         │            │   === "0"       │             │
+         │            └────────┬────────┘             │
+         │                     │                      │
+         │            ┌────────┴────────┐             │
+         │            │ Pollinations AI │             │
+         │            │ (static: 4 free │             │
+         │            │  models, no auth)│             │
+         │            └────────┬────────┘             │
+         │                     │                      │
+         │            ┌────────┴────────┐             │
+         │            │ SiliconFlow    │             │
+         │            │ (Chinese:      │             │
+         │            │  DeepSeek etc) │             │
+         │            └────────┬────────┘             │
+         │                     │                      │
+         │            ┌────────┴────────┐             │
+         │            │ New-API Gateway │             │
+         │            │ (Chinese:      │             │
+         │            │  Baidu/Alibaba/│             │
+         │            │  Tencent/etc)  │             │
+         │            └────────┬────────┘             │
+         │                     │                      │
+         └────────────────────┼──────────────────────┘
+                              ▼
+                   ┌─────────────────────┐
+                   │ Merged Registry     │
+                   │ all free models     │
+                   └─────────┬───────────┘
+                             │
+                ┌────────────┴────────────┐
+                ▼                          ▼
+         ┌────────────┐            ┌─────────────┐
+         │ Ping Engine │            │ TUI Display │
+         │ (every 2s)  │            │ (live view)  │
+         └────────────┘            └─────────────┘
+```
+
+**Key properties preserved from ClawLabsAI/free-ai-models:**
+- **即時性 (Real-time)**: OpenRouter API polled at startup for current free models
+- **免去多方註冊 (No multi-party registration)**: OpenRouter catalog and Pollinations AI require no API keys
 
 ## License
 
