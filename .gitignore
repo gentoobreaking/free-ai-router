@@ -1,0 +1,4 @@
+dist/
+freemodel-router
+*.log
+.DS_Store

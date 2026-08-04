@@ -1,0 +1,14 @@
+services:
+  freemodel-router:
+    build: .
+    container_name: freemodel-router
+    restart: unless-stopped
+    ports:
+      - "7352:7352"
+    volumes:
+      - freemodel_config:/root/.config/freemodel-router
+    environment:
+      - NVIDIA_API_KEY=nvapi-xxx
+      - OPENROUTER_API_KEY=sk-or-xxx
+volumes:
+  freemodel_config:
