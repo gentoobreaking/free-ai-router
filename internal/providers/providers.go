@@ -2,6 +2,7 @@ package providers
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -59,15 +60,20 @@ func (m *Manager) LoadSources(path string) error {
 		return err
 	}
 
+	freeOpenRouterModels := m.fetchFreeOpenRouterModels()
+
 	for key, src := range sources {
 		models := make([]ModelEntry, 0, len(src.Models))
-		for _, m := range src.Models {
-			if len(m) >= 2 {
-				id, _ := m[0].(string)
-				label, _ := m[1].(string)
+		for _, me := range src.Models {
+			if len(me) >= 2 {
+				id, _ := me[0].(string)
+				label, _ := me[1].(string)
 				context := ""
-				if len(m) >= 3 {
-					context, _ = m[2].(string)
+				if len(me) >= 3 {
+					context, _ = me[2].(string)
+				}
+				if key == "openrouter" && !freeOpenRouterModels[id] {
+					continue
 				}
 				models = append(models, ModelEntry{ID: id, Label: label, Context: context})
 			}
@@ -85,6 +91,44 @@ func (m *Manager) LoadSources(path string) error {
 	}
 
 	return nil
+}
+
+func (m *Manager) fetchFreeOpenRouterModels() map[string]bool {
+	resp, err := http.Get("https://openrouter.ai/api/v1/models")
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	var result struct {
+		Data []struct {
+			ID       string `json:"id"`
+			Pricing  struct {
+				Prompt     string `json:"prompt"`
+				Completion string `json:"completion"`
+			} `json:"pricing"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil
+	}
+
+	free := make(map[string]bool)
+	for _, model := range result.Data {
+		if model.Pricing.Prompt == "0" && model.Pricing.Completion == "0" {
+			free[model.ID] = true
+		}
+	}
+	return free
 }
 
 func (m *Manager) GetProvider(key string) *Provider {
@@ -172,9 +216,14 @@ func (m *Manager) DiscoverModels(providerKey string) ([]ModelEntry, error) {
 
 	var models []ModelEntry
 	for _, d := range result.Data {
-		models = append(models, ModelEntry{
-			ID: providerKey + "/" + d.ID,
-		})
+		id := providerKey + "/" + d.ID
+		if providerKey == "openrouter" {
+			free := m.fetchFreeOpenRouterModels()
+			if !free[id] {
+				continue
+			}
+		}
+		models = append(models, ModelEntry{ID: id})
 	}
 
 	return models, nil
