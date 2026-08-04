@@ -28,6 +28,7 @@ type Options struct {
 	Best         bool
 	Refresh      bool
 	NoCache      bool
+	Quiet        bool
 	ConfigExport bool
 	ConfigImport string
 	SetKeys      string
@@ -89,6 +90,8 @@ func ParseArgs(args []string) (*Options, error) {
 			opts.Refresh = true
 		case "no-cache":
 			opts.NoCache = true
+		case "quiet":
+			opts.Quiet = true
 		case "onboard":
 			opts.Onboard = true
 		case "best":

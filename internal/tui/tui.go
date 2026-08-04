@@ -13,6 +13,7 @@ import (
 	"github.com/freemodel/router/internal/config"
 	"github.com/freemodel/router/internal/models"
 	"github.com/freemodel/router/internal/ping"
+	"github.com/freemodel/router/internal/providers"
 	"github.com/freemodel/router/internal/targets"
 )
 
@@ -431,22 +432,7 @@ func (m *Model) handleSettingsInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // signupURL returns the signup URL for a provider or empty string.
 func signupURL(provider string) string {
-	urls := map[string]string{
-		"nvidia":       "https://build.nvidia.com/explore/discover",
-		"groq":         "https://console.groq.com/keys",
-		"cerebras":     "https://cloud.cerebras.ai/",
-		"openrouter":   "https://openrouter.ai/keys",
-		"googleai":     "https://aistudio.google.com/apikey",
-		"opencode":     "https://opencode.ai",
-		"codestral":    "https://console.mistral.ai/",
-		"scaleway":     "https://console.scaleway.com/",
-		"kilocode":     "https://kilocode.ai",
-		"siliconflow":  "https://siliconflow.cn/",
-		"baidu":        "https://console.bce.baidu.com/qianfan/",
-		"alibabacloud": "https://dashscope.aliyun.com/",
-		"tencent":      "https://console.cloud.tencent.com/hunyuan",
-	}
-	return urls[provider]
+	return providers.GetProviderSignupURL(provider)
 }
 
 // pingModelNowTUI mirrors the server-side pingModelNow but uses the TUI's
@@ -488,15 +474,30 @@ func (m *Model) cycleTierFilter() {
 }
 
 func (m *Model) cycleProviderFilter() {
-	providers := []string{"All", "nvidia", "openrouter", "groq", "cerebras", "opencode", "googleai"}
+	// Dynamically build provider filter list from known providers + observed.
+	list := []string{"All"}
+	seen := make(map[string]bool)
+	for _, p := range providers.ProviderKeys() {
+		list = append(list, p)
+		seen[p] = true
+	}
+	// Add any dynamically-discovered providers (e.g. clawlabs, relay-*).
+	if m.registry != nil {
+		for _, model := range m.registry.Snapshot() {
+			if !seen[model.Provider] {
+				list = append(list, model.Provider)
+				seen[model.Provider] = true
+			}
+		}
+	}
 	next := 0
-	for i, v := range providers {
+	for i, v := range list {
 		if v == m.providerFilter {
-			next = (i + 1) % len(providers)
+			next = (i + 1) % len(list)
 			break
 		}
 	}
-	m.providerFilter = providers[next]
+	m.providerFilter = list[next]
 }
 
 func (m *Model) changeInterval(dir int) {
@@ -510,46 +511,52 @@ func (m *Model) changeInterval(dir int) {
 }
 
 func (m *Model) settingsProviders() []SettingsProvider {
-	providers := []SettingsProvider{
-		{Name: "nvidia", Enabled: false},
-		{Name: "groq", Enabled: false},
-		{Name: "cerebras", Enabled: false},
-		{Name: "openrouter", Enabled: false},
-		{Name: "googleai", Enabled: false},
-		{Name: "opencode", Enabled: false},
-		{Name: "codestral", Enabled: false},
-		{Name: "scaleway", Enabled: false},
-		{Name: "kilocode", Enabled: false},
-		{Name: "ollama", Enabled: false},
-		{Name: "clawlabs", Enabled: false},
-		{Name: "new-api", Enabled: false},
-		{Name: "siliconflow", Enabled: false},
-		{Name: "baidu", Enabled: false},
-		{Name: "alibabacloud", Enabled: false},
-		{Name: "tencent", Enabled: false},
-		{Name: "kuaipao", Enabled: false},
-	}
-	if m.cfg != nil {
-		for i := range providers {
-			name := providers[i].Name
-			if pcfg, ok := m.cfg.Providers[name]; ok {
-				providers[i].Enabled = pcfg.Enabled
+	// Dynamically build from registry's observed providers + AllProviders metadata.
+	seen := make(map[string]bool)
+	var result []SettingsProvider
+
+	// First, add all known providers from the central registry (guarantees consistent order).
+	for _, p := range providers.ProviderKeys() {
+		sp := SettingsProvider{Name: p, Enabled: false}
+		if m.cfg != nil {
+			if pcfg, ok := m.cfg.Providers[p]; ok {
+				sp.Enabled = pcfg.Enabled
 			}
-			if key := config.ResolveAPIKey(name, m.cfg); key != "" {
-				providers[i].Key = key
+			if key := config.ResolveAPIKey(p, m.cfg); key != "" {
+				sp.Key = key
 			}
 		}
+		result = append(result, sp)
+		seen[p] = true
 	}
+
+	// Then add any dynamically-discovered provider keys not in the static registry
+	// (e.g. "clawlabs", relay-* providers).
+	if m.cfg != nil {
+		for name := range m.cfg.Providers {
+			if seen[name] {
+				continue
+			}
+			sp := SettingsProvider{Name: name, Enabled: m.cfg.Providers[name].Enabled}
+			if key := config.ResolveAPIKey(name, m.cfg); key != "" {
+				sp.Key = key
+			}
+			result = append(result, sp)
+			seen[name] = true
+		}
+	}
+
+	// Enrich with test status from registry.
 	if m.registry != nil {
-		for _, m := range m.registry.Snapshot() {
-			for i := range providers {
-				if providers[i].Name == m.Provider && m.Status == "up" {
-					providers[i].TestStatus = "up"
+		for _, model := range m.registry.Snapshot() {
+			for i := range result {
+				if result[i].Name == model.Provider && model.Status == "up" {
+					result[i].TestStatus = "up"
 				}
 			}
 		}
 	}
-	return providers
+	return result
 }
 
 func (m *Model) renderTargetPicker() string {

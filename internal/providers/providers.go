@@ -38,12 +38,19 @@ type ModelEntry struct {
 type Manager struct {
 	mu        sync.RWMutex
 	providers map[string]*Provider
+	logger    DiscoveryLogger
 }
 
 func NewManager() *Manager {
 	return &Manager{
 		providers: make(map[string]*Provider),
 	}
+}
+
+// SetLogger attaches a DiscoveryLogger for the four-phase discovery pipeline.
+// Set nil to suppress all discovery output.
+func (m *Manager) SetLogger(l DiscoveryLogger) {
+	m.logger = l
 }
 
 func (m *Manager) LoadSources(path string) error {
@@ -74,10 +81,14 @@ func (m *Manager) LoadSourcesWithCache(path string, cacheTTL time.Duration, forc
 	}
 
 	// ── Full discovery (existing logic) ──
+	log := loggerFor(m)
+
 	var sources map[string]SourceProvider
 	if err := json.Unmarshal(data, &sources); err != nil {
 		return err
 	}
+
+	log.Info("phase=static loading %d provider definitions", len(sources))
 
 	freeOpenRouterModels := m.fetchFreeOpenRouterModels()
 	clawLabsModels := m.fetchClawLabsModels()
@@ -99,6 +110,12 @@ func (m *Manager) LoadSourcesWithCache(path string, cacheTTL time.Duration, forc
 				}
 			}
 
+			if key == "openrouter" {
+				log.Info("static openrouter: %d models total, %d free-tier eligible", len(src.Models), len(models))
+			} else if len(models) > 0 {
+				log.Debug("static %s: %d models", key, len(models))
+			}
+
 			m.providers[key] = &Provider{
 				Key:          key,
 				Name:         src.Name,
@@ -111,6 +128,7 @@ func (m *Manager) LoadSourcesWithCache(path string, cacheTTL time.Duration, forc
 		}
 
 		// Merge ClawLabs aggregated models as a separate provider
+		log.Info("phase=clawlabs merged %d models into provider \"clawlabs\"", len(clawLabsModels))
 		m.providers["clawlabs"] = &Provider{
 			Key:          "clawlabs",
 			Name:         "ClawLabs Free Models",
@@ -122,17 +140,23 @@ func (m *Manager) LoadSourcesWithCache(path string, cacheTTL time.Duration, forc
 		}
 
 		// Discover and add relay sites from community forums
-		relaySites := ScannedRelaySites()
+		log.Info("phase=relay_scan starting")
+		relaySites := ScannedRelaySites(log)
+		log.Info("relay_scan result: %d sites found", len(relaySites))
+		healthyRelayCount := 0
 		for _, site := range relaySites {
 			if !site.Healthy {
 				continue
 			}
+			healthyRelayCount++
 			providerKey := "relay-" + sanitizeRelayKey(site.BaseURL)
 			if _, exists := m.providers[providerKey]; !exists {
 				models, err := DiscoverModelsFromRelay(site.BaseURL, providerKey)
 				if err != nil || len(models) == 0 {
+					log.Warn("relay_scan skip %s: no models or error", site.BaseURL)
 					continue
 				}
+				log.Info("relay_scan registered %s (%d models)", providerKey, len(models))
 				m.providers[providerKey] = &Provider{
 					Key:          providerKey,
 					Name:         "Public Relay: " + site.BaseURL,
@@ -145,6 +169,13 @@ func (m *Manager) LoadSourcesWithCache(path string, cacheTTL time.Duration, forc
 			}
 		}
 
+		// Summary
+		totalModels := 0
+		for _, p := range m.providers {
+			totalModels += len(p.Models)
+		}
+		log.Info("summary: %d providers, ~%d models total", len(m.providers), totalModels)
+
 		// Save merged result to cache
 		ttlMinutes := int(cacheTTL.Minutes())
 		saveCache(m.providers, dataDir, sourcesHash, ttlMinutes)
@@ -154,6 +185,7 @@ func (m *Manager) LoadSourcesWithCache(path string, cacheTTL time.Duration, forc
 
 	// Auto-discover models from discoverable providers (called after LoadSources returns).
 	func (m *Manager) AutoDiscoverModels() {
+		log := loggerFor(m)
 		m.mu.RLock()
 		providerKeys := make([]string, 0, len(m.providers))
 		for key := range m.providers {
@@ -161,6 +193,9 @@ func (m *Manager) LoadSourcesWithCache(path string, cacheTTL time.Duration, forc
 		}
 		m.mu.RUnlock()
 
+		log.Info("phase=autodiscover scanning %d discoverable providers", len(providerKeys))
+
+		newCount := 0
 		for _, key := range providerKeys {
 			p := m.GetProvider(key)
 			if p == nil || !p.Discoverable || p.BaseURL == "" {
@@ -168,6 +203,7 @@ func (m *Manager) LoadSourcesWithCache(path string, cacheTTL time.Duration, forc
 			}
 			discovered, err := m.DiscoverModels(key)
 			if err != nil {
+				log.Warn("autodiscover %s: error %v (skipped)", key, err)
 				continue
 			}
 			if len(discovered) == 0 {
@@ -180,13 +216,26 @@ func (m *Manager) LoadSourcesWithCache(path string, cacheTTL time.Duration, forc
 				for _, em := range prov.Models {
 					existing[em.ID] = true
 				}
+				localNew := 0
 				for _, dm := range discovered {
 					if !existing[dm.ID] {
 						prov.Models = append(prov.Models, dm)
+						localNew++
 					}
+				}
+				if localNew > 0 {
+					newCount += localNew
+					log.Info("autodiscover %s: +%d new models (total %d)", key, localNew, len(prov.Models))
+				} else {
+					log.Debug("autodiscover %s: 0 new (all %d already known)", key, len(prov.Models))
 				}
 			}
 			m.mu.Unlock()
+		}
+		if newCount > 0 {
+			log.Info("autodiscover result: +%d new models total", newCount)
+		} else {
+			log.Info("autodiscover result: 0 new models")
 		}
 	}
 
@@ -415,32 +464,12 @@ func extractBaseURL(url string) string {
 }
 
 func EnvVarForProvider(provider string) string {
-	envMap := map[string]string{
-		"nvidia":            "NVIDIA_API_KEY",
-		"groq":              "GROQ_API_KEY",
-		"cerebras":          "CEREBRAS_API_KEY",
-		"opencode":          "OPENCODE_API_KEY",
-		"openrouter":        "OPENROUTER_API_KEY",
-		"openai-compatible": "OPENAI_COMPATIBLE_API_KEY",
-		"ollama":            "OLLAMA_API_KEY",
-		"codestral":         "CODESTRAL_API_KEY",
-		"scaleway":          "SCALEWAY_API_KEY",
-		"kilocode":          "KILOCODE_API_KEY",
-		"googleai":          "GOOGLE_API_KEY",
-		"new-api":           "NEW_API_API_KEY",
-		"siliconflow":       "SILICONFLOW_API_KEY",
-		"baidu":             "QIANFAN_API_KEY",
-		"alibabacloud":      "DASHSCOPE_API_KEY",
-		"tencent":           "TENCENT_CLOUD_API_KEY",
-		"kuaipao":           "KUAIPAO_API_KEY",
-	}
-
-	if env, ok := envMap[provider]; ok {
+	if env := GetProviderEnvVar(provider); env != "" {
 		if val := os.Getenv(env); val != "" {
 			return val
 		}
+		return ""
 	}
-
 	return ""
 }
 

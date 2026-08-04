@@ -93,7 +93,8 @@ func TestIsRelayCandidate(t *testing.T) {
 
 func TestScanV2EXRelaySites(t *testing.T) {
 	// This test hits the real V2EX API - may skip if network is unavailable
-	sites := scanV2EXRelaySites()
+	log := &nilLogger{}
+	sites := scanV2EXRelaySites(log)
 	t.Logf("Found %d relay sites from V2EX", len(sites))
 	// We can't assert specific results since V2EX content changes,
 	// but we can verify the function doesn't crash
@@ -101,7 +102,8 @@ func TestScanV2EXRelaySites(t *testing.T) {
 
 func TestScanLinuxDoRelaySites(t *testing.T) {
 	// This test hits the real linux.do API - may skip if network is unavailable
-	sites := scanLinuxDoRelaySites()
+	log := &nilLogger{}
+	sites := scanLinuxDoRelaySites(log)
 	t.Logf("Found %d relay sites from linux.do", len(sites))
 	// We can't assert specific results since linux.do content changes,
 	// but we can verify the function doesn't crash

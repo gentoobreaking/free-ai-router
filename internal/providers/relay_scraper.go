@@ -20,16 +20,19 @@ type RelaySite struct {
 	LastSuccess time.Time `json:"last_success"`
 }
 
-// ScannedRelaySites returns discovered relay sites from community forums
-func ScannedRelaySites() []*RelaySite {
+// ScannedRelaySites returns discovered relay sites from community forums.
+// log receives structured progress output during scanning.
+func ScannedRelaySites(log DiscoveryLogger) []*RelaySite {
 	var sites []*RelaySite
 
-	// 1. Scan V2EX for public new-api relay sites
-	v2exSites := scanV2EXRelaySites()
+	log.Debug("relay_scan v2ex: scraping go/ai")
+	v2exSites := scanV2EXRelaySites(log)
+	log.Debug("relay_scan v2ex: %d relay candidates", len(v2exSites))
 	sites = append(sites, v2exSites...)
 
-	// 2. Scan linux.do for public new-api relay sites
-	ldSites := scanLinuxDoRelaySites()
+	log.Debug("relay_scan linuxdo: scraping c/ai/analysis")
+	ldSites := scanLinuxDoRelaySites(log)
+	log.Debug("relay_scan linuxdo: %d relay candidates", len(ldSites))
 	sites = append(sites, ldSites...)
 
 	// Deduplicate by base URL
@@ -42,24 +45,45 @@ func ScannedRelaySites() []*RelaySite {
 		}
 	}
 
+	log.Debug("relay_scan dedup: %d → %d unique URLs", len(sites), len(unique))
+
+	// Validate each candidate
+	healthy := 0
+	for _, s := range unique {
+		if ValidateNewApiRelay(s.BaseURL) {
+			s.Healthy = true
+			s.LastSuccess = time.Now()
+			healthy++
+			log.Info("relay_scan validate %s → healthy", s.BaseURL)
+		} else {
+			log.Debug("relay_scan validate %s → unhealthy (skipped)", s.BaseURL)
+		}
+	}
+
+	if len(unique) > 0 {
+		log.Info("relay_scan result: %d tested, %d healthy, %d failed", len(unique), healthy, len(unique)-healthy)
+	} else {
+		log.Info("relay_scan result: 0 sites found (normal in restricted networks)")
+	}
+
 	return unique
 }
 
 // scanV2EXRelaySites scans V2EX go/ai node for public new-api relay sites
-func scanV2EXRelaySites() []*RelaySite {
-	return scanForumRelaySites("https://www.v2ex.com/go/ai", v2exKeywords)
+func scanV2EXRelaySites(log DiscoveryLogger) []*RelaySite {
+	return scanForumRelaySites("https://www.v2ex.com/go/ai", v2exKeywords, log)
 }
 
 // scanLinuxDoRelaySites scans linux.do AI board for public new-api relay sites
-func scanLinuxDoRelaySites() []*RelaySite {
-	return scanForumRelaySites("https://linux.do/c/ai/analysis", linuxDoKeywords)
+func scanLinuxDoRelaySites(log DiscoveryLogger) []*RelaySite {
+	return scanForumRelaySites("https://linux.do/c/ai/analysis", linuxDoKeywords, log)
 }
 
 var v2exKeywords = []string{"公益 api", "免費轉發", "new-api", "one-api", "公益中轉"}
 var linuxDoKeywords = []string{"公益", "免費", "new-api", "one-api", "轉發"}
 
 // scanForumRelaySites fetches a forum page and extracts URLs that match keywords
-func scanForumRelaySites(forumURL string, keywords []string) []*RelaySite {
+func scanForumRelaySites(forumURL string, keywords []string, log DiscoveryLogger) []*RelaySite {
 	// Use a custom User-Agent to avoid being blocked
 	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest("GET", forumURL, nil)

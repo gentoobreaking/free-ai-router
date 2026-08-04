@@ -259,7 +259,11 @@ func ResolveAPIKey(provider string, cfg *Config) string {
 		}
 	}
 
+	cfg.RLock()
 	keys, ok := cfg.APIKeys[provider]
+	autoDetectKeys := cfg.AutoDetectKeys
+	cfg.RUnlock()
+
 	if ok {
 		switch v := keys.(type) {
 		case string:
@@ -276,7 +280,7 @@ func ResolveAPIKey(provider string, cfg *Config) string {
 	}
 
 	// Layer 3: auto-detect from shell RC files / agent configs
-	if cfg.AutoDetectKeys {
+	if autoDetectKeys {
 		detectOnce.Do(func() {
 			detectedKeys = AutoDetectKeys()
 		})
@@ -297,7 +301,10 @@ func ResolveAPIKeys(provider string, cfg *Config) []string {
 		}
 	}
 
+	cfg.RLock()
 	keys, ok := cfg.APIKeys[provider]
+	cfg.RUnlock()
+
 	if !ok {
 		return nil
 	}
@@ -322,7 +329,10 @@ func ResolveAPIKeys(provider string, cfg *Config) []string {
 // ignoring env overrides (used by key-editing CLI commands so env-configured
 // providers are never written back into the config).
 func KeysFromConfig(provider string, cfg *Config) []string {
+	cfg.RLock()
 	keys, ok := cfg.APIKeys[provider]
+	cfg.RUnlock()
+
 	if !ok {
 		return nil
 	}

@@ -9,26 +9,8 @@ import (
 	"strings"
 
 	"github.com/freemodel/router/internal/config"
+	"github.com/freemodel/router/internal/providers"
 )
-
-type providerSignup struct {
-	key       string
-	prefix    string
-	signupURL string
-}
-
-var signupInfo = map[string]providerSignup{
-	"nvidia":     {prefix: "nvapi-", signupURL: "https://build.nvidia.com/"},
-	"groq":       {prefix: "gsk_", signupURL: "https://console.groq.com/keys"},
-	"cerebras":   {prefix: "cerebras", signupURL: "https://cloud.cerebras.ai/"},
-	"openrouter": {prefix: "sk-or-", signupURL: "https://openrouter.ai/keys"},
-	"googleai":   {prefix: "AIza", signupURL: "https://aistudio.google.com/apikey"},
-	"opencode":   {prefix: "oc-", signupURL: "https://opencode.ai/"},
-	"codestral":  {prefix: "", signupURL: "https://codestral.mistral.ai/"},
-	"scaleway":   {prefix: "", signupURL: "https://console.scaleway.com/"},
-	"kilocode":   {prefix: "", signupURL: "https://kilocode.ai/"},
-	"ollama":     {prefix: "", signupURL: "https://ollama.com/"},
-}
 
 func RunOnboard() error {
 	cfg, err := config.Load()
@@ -46,33 +28,35 @@ func RunOnboard() error {
 	fmt.Println("  For each provider, choose: [O]pen browser + enter key, [E]nter key manually, [S]kip")
 	fmt.Println()
 
-	providers := []string{"nvidia", "groq", "cerebras", "openrouter", "googleai", "opencode", "codestral", "scaleway", "kilocode"}
-
-	for _, provider := range providers {
-		info, ok := signupInfo[provider]
-		if !ok {
-			continue
+	// Build list from centralized provider registry, skipping providers
+	// without a signup URL.
+	var onboardList []providers.ProviderMeta
+	for _, p := range providers.AllProviders {
+		if p.SignupURL != "" {
+			onboardList = append(onboardList, p)
 		}
+	}
 
-		fmt.Printf("  %s\n", provider)
+	for _, p := range onboardList {
+		fmt.Printf("  %s\n", p.Key)
 		fmt.Print("  Choice (O/E/S): ")
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(strings.ToUpper(choice))
 
 		switch choice {
 		case "O":
-			fmt.Printf("    Opening %s ...\n", info.signupURL)
-			_ = openBrowser(info.signupURL)
-			key := promptKey(reader, provider, info.prefix)
+			fmt.Printf("    Opening %s ...\n", p.SignupURL)
+			_ = openBrowser(p.SignupURL)
+			key := promptKey(reader, p.Key, p.KeyPrefix)
 			if key != "" {
-				cfg.APIKeys[provider] = key
-				setEnabled(cfg, provider)
+				cfg.APIKeys[p.Key] = key
+				setEnabled(cfg, p.Key)
 			}
 		case "E":
-			key := promptKey(reader, provider, info.prefix)
+			key := promptKey(reader, p.Key, p.KeyPrefix)
 			if key != "" {
-				cfg.APIKeys[provider] = key
-				setEnabled(cfg, provider)
+				cfg.APIKeys[p.Key] = key
+				setEnabled(cfg, p.Key)
 			}
 		default:
 			fmt.Println("    Skipped.")

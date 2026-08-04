@@ -187,7 +187,12 @@ func parseContext(s string) string {
 func (r *Registry) LoadFromSources(mgr *providers.Manager) {
 	models := mgr.GetAllModels()
 	var result []*Model
+	seen := make(map[string]bool)
 	for _, m := range models {
+		if seen[m.ID] {
+			continue
+		}
+		seen[m.ID] = true
 		provider := strings.SplitN(m.ID, "/", 2)[0]
 		result = append(result, &Model{
 			ID:       m.ID,
@@ -243,6 +248,71 @@ func LoadScores(path string) (map[string]float64, error) {
 		return nil, err
 	}
 	return scores, nil
+}
+
+// ApplyScores loads scores.json and assigns QualityScore + Tier to every model
+// in the registry. Models without a matching score entry receive a default of 0.45.
+func (r *Registry) ApplyScores(dataPath string) error {
+	scores, err := LoadScores(dataPath)
+	if err != nil {
+		return err
+	}
+	for _, m := range r.GetAll() {
+		canonicalID := m.ID
+		if strings.Contains(canonicalID, "/") {
+			parts := strings.SplitN(canonicalID, "/", 2)
+			canonicalID = parts[1]
+		}
+		score, ok := scores[canonicalID]
+		if !ok {
+			score, ok = scores[m.ID]
+		}
+		if !ok {
+			parts := strings.SplitN(m.ID, "/", 3)
+			if len(parts) == 3 {
+				score, ok = scores[parts[1]+"/"+parts[2]]
+			}
+		}
+		if ok {
+			m.QualityScore = score
+		} else {
+			m.QualityScore = 0.45
+		}
+		m.Tier = ComputeTier(m.QualityScore)
+	}
+	return nil
+}
+
+// ApplyTags loads model-tags.json and assigns tags to every model.
+func (r *Registry) ApplyTags(tagMgr *TagManager, dataPath string) error {
+	if err := tagMgr.LoadBuiltIn(dataPath); err != nil {
+		return err
+	}
+	for _, m := range r.GetAll() {
+		m.Tags = tagMgr.GetModelTags(m.ID)
+	}
+	return nil
+}
+
+// ApplyEndpoints sets Endpoint, UpstreamModelID, and ProviderHost on each model
+// from the provider manager's URL and base-URL mappings.
+func (r *Registry) ApplyEndpoints(mgr *providers.Manager) {
+	for _, m := range r.GetAll() {
+		provider := mgr.GetProvider(m.Provider)
+		if provider == nil {
+			continue
+		}
+		if provider.URL != "" {
+			m.Endpoint = provider.URL
+		}
+		parts := strings.SplitN(m.ID, "/", 2)
+		upstreamID := m.ID
+		if len(parts) == 2 {
+			upstreamID = parts[1]
+		}
+		m.UpstreamModelID = upstreamID
+		m.ProviderHost = provider.BaseURL
+	}
 }
 
 func ResolveGroup(id string) string {

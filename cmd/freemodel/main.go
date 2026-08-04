@@ -70,8 +70,14 @@ func run() error {
 	return runTUI(opts)
 }
 
-func buildRegistry(refresh bool, useCache bool) (*models.Registry, *models.TagManager, *providers.Manager, error) {
+func buildRegistry(refresh bool, useCache bool, quiet bool) (*models.Registry, *models.TagManager, *providers.Manager, error) {
 	provMgr := providers.NewManager()
+
+	if quiet {
+		provMgr.SetLogger(providers.NewDefaultLogger(providers.LevelSilent))
+	} else {
+		provMgr.SetLogger(providers.NewDefaultLogger(providers.LevelInfo))
+	}
 
 	if useCache {
 		if err := provMgr.LoadSourcesWithCache(providers.DataDir()+"/data/sources.json", providers.DefaultCacheTTL, refresh); err != nil {
@@ -88,71 +94,20 @@ func buildRegistry(refresh bool, useCache bool) (*models.Registry, *models.TagMa
 	registry := models.NewRegistry()
 	registry.LoadFromSources(provMgr)
 
-	aliases, err := models.LoadAliases(models.DataPath("model-aliases.json"))
-	if err == nil {
-		_ = aliases
-	}
+	// Scores (non-fatal: proceed without scores.json)
+	_ = registry.ApplyScores(models.DataPath("scores.json"))
 
-	offlineScores, err := models.LoadScores(models.DataPath("scores.json"))
-	if err == nil {
-		for _, m := range registry.GetAll() {
-			canonicalID := m.ID
-			if strings.Contains(canonicalID, "/") {
-				parts := strings.SplitN(canonicalID, "/", 2)
-				canonicalID = parts[1]
-			}
-			score, ok := offlineScores[canonicalID]
-			if !ok {
-				score, ok = offlineScores[m.ID]
-			}
-			if !ok {
-				parts := strings.SplitN(m.ID, "/", 3)
-				if len(parts) == 3 {
-					score, ok = offlineScores[parts[1]+"/"+parts[2]]
-				}
-			}
-			if ok {
-				m.QualityScore = score
-			} else {
-				m.QualityScore = 0.45
-			}
-			m.Tier = models.ComputeTier(m.QualityScore)
-		}
-	}
-
+	// Tags (non-fatal: proceed without tags)
 	tagMgr := models.NewTagManager()
-	if err := tagMgr.LoadBuiltIn(models.DataPath("model-tags.json")); err == nil {
-		for _, m := range registry.GetAll() {
-			m.Tags = tagMgr.GetModelTags(m.ID)
-		}
-	}
+	_ = registry.ApplyTags(tagMgr, models.DataPath("model-tags.json"))
 
-	applyEndpoints(registry, provMgr)
+	registry.ApplyEndpoints(provMgr)
 
 	return registry, tagMgr, provMgr, nil
 }
 
-func applyEndpoints(registry *models.Registry, provMgr *providers.Manager) {
-	for _, m := range registry.GetAll() {
-		provider := provMgr.GetProvider(m.Provider)
-		if provider == nil {
-			continue
-		}
-		if provider.URL != "" {
-			m.Endpoint = provider.URL
-		}
-		parts := strings.SplitN(m.ID, "/", 2)
-		upstreamID := m.ID
-		if len(parts) == 2 {
-			upstreamID = parts[1]
-		}
-		m.UpstreamModelID = upstreamID
-		m.ProviderHost = provider.BaseURL
-	}
-}
-
 func runTUI(opts *cli.Options) error {
-	registry, _, _, err := buildRegistry(opts.Refresh, !opts.NoCache)
+	registry, _, _, err := buildRegistry(opts.Refresh, !opts.NoCache, opts.Quiet)
 	if err != nil {
 		return err
 	}
@@ -176,7 +131,7 @@ func runTUI(opts *cli.Options) error {
 }
 
 func runServer(opts *cli.Options) error {
-	registry, _, provMgr, err := buildRegistry(opts.Refresh, !opts.NoCache)
+	registry, _, provMgr, err := buildRegistry(opts.Refresh, !opts.NoCache, opts.Quiet)
 	if err != nil {
 		return err
 	}
@@ -236,7 +191,7 @@ func applyRouterConfig(registry *models.Registry, cfg *config.Config, opts *cli.
 }
 
 func runBest(opts *cli.Options) error {
-	registry, _, _, err := buildRegistry(opts.Refresh, !opts.NoCache)
+	registry, _, _, err := buildRegistry(opts.Refresh, !opts.NoCache, opts.Quiet)
 	if err != nil {
 		return err
 	}
@@ -252,6 +207,7 @@ func runBest(opts *cli.Options) error {
 		return config.ResolveAPIKey(provider, cfg)
 	}
 
-	_, err = cli.RunBest(registry, resolveKey)
+	bestID, err := cli.RunBest(registry, resolveKey)
+	_ = bestID
 	return err
 }
