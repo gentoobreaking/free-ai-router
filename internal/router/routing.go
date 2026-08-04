@@ -12,6 +12,7 @@ import (
 
 	"github.com/freemodel/router/internal/models"
 	"github.com/freemodel/router/internal/ping"
+	"github.com/freemodel/router/internal/providers"
 )
 
 const MAX_PROACTIVE_RETRIES = 5
@@ -277,6 +278,14 @@ func (r *Router) markFailure(m *models.Model) {
 // respBody carries the upstream body for non-stream responses (used for
 // logging usage); it is nil for streaming responses.
 func (r *Router) forward(w http.ResponseWriter, req *http.Request, m *models.Model, body []byte, start time.Time) (bool, int, []byte, time.Duration, error) {
+	// Pollinations /text fallback when no API key is available.
+	// /v1/chat/completions requires a key (returns 401), so we route
+	// to the unauthenticated /text/{prompt} endpoint and wrap the
+	// plain-text response as OpenAI-compatible JSON.
+	if m.Provider == "pollinations" && m.APIKey == "" {
+		return r.forwardPollinationsText(w, m, body, start)
+	}
+
 	upstreamBody, err := rewriteModel(body, m.UpstreamModelID)
 	if err != nil {
 		// Defensive: a body that parsed as a request but is not a JSON
@@ -349,6 +358,62 @@ func (r *Router) forward(w http.ResponseWriter, req *http.Request, m *models.Mod
 		return true, resp.StatusCode, nil, ttfb, nil
 	}
 	return true, resp.StatusCode, respBody, ttfb, nil
+}
+
+// forwardPollinationsText routes a Pollinations model request to the
+// unauthenticated /text/{prompt} endpoint and wraps the plain-text
+// response as OpenAI-compatible JSON (§7.3 / T066).
+//
+// The /text endpoint does not support streaming, so stream requests
+// are served as a single SSE chunk.
+func (r *Router) forwardPollinationsText(w http.ResponseWriter, m *models.Model, body []byte, start time.Time) (bool, int, []byte, time.Duration, error) {
+	prompt, err := providers.ConvertOpenAIToPollinations(body, m.ID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("pollinations /text adapter: %v", err),
+		})
+		return true, http.StatusBadRequest, nil, 0, nil
+	}
+
+	targetURL := providers.BuildPollinationsTextURL(prompt, m.ID)
+
+	client := &http.Client{
+		Transport: r.pool.Get("text.pollinations.ai"),
+		Timeout:   120 * time.Second,
+	}
+
+	resp, err := client.Get(targetURL)
+	if err != nil {
+		return false, 0, nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	ttfb := time.Since(start)
+
+	if resp.StatusCode >= 500 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return false, resp.StatusCode, nil, ttfb, nil
+	}
+
+	text, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, 0, nil, 0, err
+	}
+
+	wrapped := providers.WrapPollinationsResponse(string(text))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	// For stream requests, serve as a single SSE chunk
+	if isStreamRequest(body) {
+		_ = writeSSEChunk(w, wrapped)
+		_ = writeSSEDone(w)
+	} else {
+		_, _ = w.Write(wrapped)
+	}
+
+	return true, http.StatusOK, wrapped, ttfb, nil
 }
 
 // rewriteModel replaces the "model" field with the resolved upstream ID while
@@ -477,4 +542,16 @@ func containsTag(tags []string, tag string) bool {
 
 func qos(m *models.Model) float64 {
 	return models.ComputeQoS(m)
+}
+
+// writeSSEChunk writes a single SSE data chunk.
+func writeSSEChunk(w io.Writer, data []byte) error {
+	_, err := fmt.Fprintf(w, "data: %s\n\n", data)
+	return err
+}
+
+// writeSSEDone writes the SSE stream-termination marker.
+func writeSSEDone(w io.Writer) error {
+	_, err := fmt.Fprint(w, "data: [DONE]\n\n")
+	return err
 }

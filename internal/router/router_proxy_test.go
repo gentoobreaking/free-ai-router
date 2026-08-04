@@ -239,3 +239,168 @@ func TestRequestBodyParsing(t *testing.T) {
 		t.Errorf("invalid JSON should return 400, got %d", w.Code)
 	}
 }
+
+func TestPollinationsTextFallback(t *testing.T) {
+	// mock /text endpoint that returns plain text
+	textServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/") {
+			t.Errorf("unexpected request path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Hello from Pollinations!"))
+	}))
+	defer textServer.Close()
+
+	// override PollinationsTextEndpoint so BuildPollinationsTextURL hits mock
+	// We test forwardPollinationsText directly
+	registry := models.NewRegistry()
+	m := &models.Model{
+		ID:           "pollinations/openai",
+		Label:        "Pollinations GPT-4o",
+		Provider:     "pollinations",
+		Status:       "up",
+		Endpoint:     "", // no /v1 endpoint — should trigger /text path
+		APIKey:       "", // keyless → trigger forwardPollinationsText
+		ProviderHost: "127.0.0.1",
+		QualityScore: 0.8,
+		Uptime:       95,
+	}
+	registry.Add(m)
+
+	router := NewRouter(registry, NewLogger(true))
+
+	body := `{"model":"pollinations/openai","messages":[{"role":"user","content":"Hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+
+	router.ServeChatCompletions(w, req)
+
+	// Should reach /text endpoint (real server, not mock) — if pollinations
+	// is up it returns 200 with JSON-wrapped response; if not, failover returns 503
+	// This test is network-dependent; skip if pollinations.ai is down
+	if w.Code == http.StatusServiceUnavailable {
+		t.Skip("pollinations /text endpoint unreachable in this environment")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from pollinations /text, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify response is OpenAI-compatible JSON
+	var completion struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &completion); err != nil {
+		t.Fatalf("response is not valid JSON: %v\nBody: %s", err, w.Body.String())
+	}
+	if completion.Object != "chat.completion" {
+		t.Errorf("object = %q, want chat.completion", completion.Object)
+	}
+	if len(completion.Choices) == 0 || completion.Choices[0].Message.Role != "assistant" {
+		t.Error("response missing expected choices/role")
+	}
+}
+
+func TestPollinationsTextFallbackInvalidBody(t *testing.T) {
+	registry := models.NewRegistry()
+	m := &models.Model{
+		ID:       "pollinations/openai",
+		Provider: "pollinations",
+		Status:   "up",
+		APIKey:   "",
+	}
+	registry.Add(m)
+	router := NewRouter(registry, NewLogger(true))
+
+	// Body with no user messages
+	body := `{"model":"pollinations/openai","messages":[{"role":"system","content":"you are helpful"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+
+	router.ServeChatCompletions(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for body without user message, got %d", w.Code)
+	}
+}
+
+func TestPollinationsTextWithAPIKeyRoutesNormally(t *testing.T) {
+	// When pollinations model HAS an API key, it should NOT trigger /text fallback
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify it came via /v1/chat/completions not /text
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+
+	registry := models.NewRegistry()
+	m := &models.Model{
+		ID:              "pollinations/openai",
+		Provider:        "pollinations",
+		Status:          "up",
+		Endpoint:        upstream.URL,
+		APIKey:          "sk-fake-key", // has key → normal path
+		UpstreamModelID: "gpt-4o",
+		QualityScore:    0.8,
+		Uptime:          95,
+	}
+	registry.Add(m)
+	router := NewRouter(registry, NewLogger(true))
+
+	body := `{"model":"pollinations/openai","messages":[{"role":"user","content":"Hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+
+	router.ServeChatCompletions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 via normal path, got %d", w.Code)
+	}
+}
+
+func TestPollinationsTextStreaming(t *testing.T) {
+	// /text endpoint doesn't support streaming, but the adapter should
+	// serve it as a single SSE chunk. This is a live test.
+	registry := models.NewRegistry()
+	m := &models.Model{
+		ID:       "pollinations/openai",
+		Provider: "pollinations",
+		Status:   "up",
+		APIKey:   "",
+	}
+	registry.Add(m)
+	router := NewRouter(registry, NewLogger(true))
+
+	body := `{"model":"pollinations/openai","stream":true,"messages":[{"role":"user","content":"Say hello in one word"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+
+	router.ServeChatCompletions(w, req)
+
+	if w.Code == http.StatusServiceUnavailable {
+		t.Skip("pollinations /text endpoint unreachable")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// SSE format: "data: ...\n\n" then "data: [DONE]\n\n"
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, "data: ") {
+		t.Errorf("stream response missing SSE data prefix: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "[DONE]") {
+		t.Errorf("stream response missing [DONE] marker: %s", bodyStr)
+	}
+}

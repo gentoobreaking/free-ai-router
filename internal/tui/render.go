@@ -246,7 +246,16 @@ func FilterModels(list []*models.Model, codingOnly bool, tier, provider, query s
 }
 
 func truncateStr(s string, max int) string {
-	return truncate(s, max)
+	if len(s) <= max {
+		return s
+	}
+	// Find the last full rune within the limit to avoid breaking
+	// multi-byte characters.
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
 }
 
 func hasTag(tags []string, tag string) bool {
