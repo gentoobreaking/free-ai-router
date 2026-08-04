@@ -61,6 +61,7 @@ func (m *Manager) LoadSources(path string) error {
 	}
 
 	freeOpenRouterModels := m.fetchFreeOpenRouterModels()
+	clawLabsModels := m.fetchClawLabsModels()
 
 	for key, src := range sources {
 		models := make([]ModelEntry, 0, len(src.Models))
@@ -88,6 +89,17 @@ func (m *Manager) LoadSources(path string) error {
 			Enabled:      true,
 			BaseURL:      extractBaseURL(src.URL),
 		}
+	}
+
+	// Merge ClawLabs aggregated models as a separate provider
+	m.providers["clawlabs"] = &Provider{
+		Key:          "clawlabs",
+		Name:         "ClawLabs Free Models",
+		URL:          "",
+		Discoverable: false,
+		Models:       clawLabsModels,
+		Enabled:      true,
+		BaseURL:      "",
 	}
 
 	return nil
@@ -129,6 +141,41 @@ func (m *Manager) fetchFreeOpenRouterModels() map[string]bool {
 		}
 	}
 	return free
+}
+
+// fetchClawLabsModels fetches free models from OpenRouter (no auth) and
+// combines them with Pollinations AI static entries, matching the
+// ClawLabsAI/free-ai-models approach: daily-updated, no API keys needed.
+func (m *Manager) fetchClawLabsModels() []ModelEntry {
+	var entries []ModelEntry
+
+	// 1. Fetch free OpenRouter models (no auth required)
+	free := m.fetchFreeOpenRouterModels()
+	if free != nil {
+		for id := range free {
+			parts := strings.SplitN(id, "/", 2)
+			label := id
+			if len(parts) == 2 {
+				label = parts[1]
+			}
+			entries = append(entries, ModelEntry{
+				ID:      id,
+				Label:   label,
+				Context: "",
+			})
+		}
+	}
+
+	// 2. Add Pollinations AI static models (no auth, unlimited)
+	pollinations := []ModelEntry{
+		{ID: "pollinations/mistral-nemo", Label: "Mistral Nemo", Context: "128k"},
+		{ID: "pollinations/mistral-small", Label: "Mistral Small 3.2", Context: "128k"},
+		{ID: "pollinations/gemini-2.0-flash", Label: "Gemini 2.0 Flash", Context: "1048576k"},
+		{ID: "pollinations/openai-large", Label: "GPT-4o", Context: "128k"},
+	}
+	entries = append(entries, pollinations...)
+
+	return entries
 }
 
 func (m *Manager) GetProvider(key string) *Provider {
