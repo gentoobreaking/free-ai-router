@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 )
 
 const renderThrottle = 33 * time.Millisecond
-const liveUpdateThrottle = 300 * time.Millisecond
+const defaultScrollSortPause = 1500 * time.Millisecond
 
 type TUI struct {
 	engine          *ping.Engine
@@ -46,9 +47,9 @@ type TUI struct {
 	width           int
 	height          int
 	blurred         bool
-	renderPending   bool
+	renderPending   atomic.Bool
 	lastRender      time.Time
-	lastLiveUpdate  time.Time
+	pauseMs         time.Duration
 	quit            bool
 	paused          bool
 	pauseUntil      time.Time
@@ -62,15 +63,18 @@ type TUI struct {
 
 func New(cfg *Config) *TUI {
 	t := &TUI{
-		renderer:       NewRenderer(),
-		input:          NewInput(),
-		sortKey:        "0",
-		intervalMs:     2000,
-		codingOnly:     true,
-		width:          120,
-		height:         40,
-		lastRender:     time.Now(),
-		lastLiveUpdate: time.Now(),
+		renderer:   NewRenderer(),
+		input:      NewInput(),
+		sortKey:    "0",
+		intervalMs: 2000,
+		codingOnly: true,
+		width:      120,
+		height:     40,
+		lastRender: time.Now(),
+		pauseMs:    defaultScrollSortPause,
+	}
+	if cfg != nil && cfg.ScrollSortPauseMs > 0 {
+		t.pauseMs = time.Duration(cfg.ScrollSortPauseMs) * time.Millisecond
 	}
 	t.engine = ping.NewEngine(t.onPingUpdate)
 	return t
@@ -78,8 +82,6 @@ func New(cfg *Config) *TUI {
 
 type Config struct {
 	ScrollSortPauseMs int
-	ForceClear        bool
-	ConfigPath        string
 }
 
 func (t *TUI) SetRegistry(registry *models.Registry) {
@@ -134,11 +136,11 @@ func (t *TUI) resize() {
 		t.width = w
 		t.height = h
 	}
-	t.renderPending = true
+	t.renderPending.Store(true)
 }
 
 func (t *TUI) onPingUpdate() {
-	t.renderPending = true
+	t.renderPending.Store(true)
 }
 
 func (t *TUI) tick() {
@@ -148,16 +150,16 @@ func (t *TUI) tick() {
 		t.paused = false
 	}
 
-	if !t.blurred && t.renderPending {
+	if !t.blurred && t.renderPending.Load() {
 		if now.Sub(t.lastRender) >= renderThrottle {
 			t.render()
 			t.lastRender = now
-			t.renderPending = false
+			t.renderPending.Store(false)
 		}
 	}
 
 	if t.blurred {
-		t.renderPending = true
+		t.renderPending.Store(true)
 	}
 }
 
@@ -243,7 +245,7 @@ func (t *TUI) handleInput(ev InputEvent) {
 	if t.showHelp {
 		if ev.Key == KeyEsc || ev.Key == KeyRune && ev.Rune == 'q' {
 			t.showHelp = false
-			t.renderPending = true
+			t.renderPending.Store(true)
 		}
 		return
 	}
@@ -281,7 +283,7 @@ func (t *TUI) handleInput(ev InputEvent) {
 	case KeyBackspace:
 		if t.searchQuery != "" {
 			t.searchQuery = t.searchQuery[:len(t.searchQuery)-1]
-			t.renderPending = true
+			t.renderPending.Store(true)
 		}
 	case KeyRune:
 		switch ev.Rune {
@@ -293,16 +295,16 @@ func (t *TUI) handleInput(ev InputEvent) {
 			t.navigate(-1)
 		case 'g':
 			t.selected = 0
-			t.renderPending = true
+			t.renderPending.Store(true)
 		case 'G':
 			t.selected = t.visibleCount()
-			t.renderPending = true
+			t.renderPending.Store(true)
 		case '/':
 			t.searchMode = true
-			t.renderPending = true
+			t.renderPending.Store(true)
 		case 'C':
 			t.codingOnly = !t.codingOnly
-			t.renderPending = true
+			t.renderPending.Store(true)
 		case 'T':
 			t.cycleTierFilter()
 		case 'N':
@@ -314,10 +316,10 @@ func (t *TUI) handleInput(ev InputEvent) {
 		case 'P':
 			t.showSettings = true
 			t.settingsIndex = 0
-			t.renderPending = true
+			t.renderPending.Store(true)
 		case '?':
 			t.showHelp = true
-			t.renderPending = true
+			t.renderPending.Store(true)
 		case '0':
 			t.setSort("0")
 		case '1':
@@ -345,7 +347,7 @@ func (t *TUI) handleInput(ev InputEvent) {
 		t.blurred = true
 	case KeyFocusIn:
 		t.blurred = false
-		t.renderPending = true
+		t.renderPending.Store(true)
 	}
 }
 
@@ -355,23 +357,23 @@ func (t *TUI) handleSearchInput(ev InputEvent) {
 	switch ev.Key {
 	case KeyEnter:
 		t.searchMode = false
-		t.renderPending = true
+		t.renderPending.Store(true)
 		t.openTargetPicker()
 	case KeyEsc:
 		t.searchQuery = ""
 		t.searchMode = false
-		t.renderPending = true
+		t.renderPending.Store(true)
 	case KeyBackspace:
 		if t.searchQuery != "" {
 			t.searchQuery = t.searchQuery[:len(t.searchQuery)-1]
-			t.renderPending = true
+			t.renderPending.Store(true)
 		}
 	case KeyCtrlC:
 		t.quit = true
 	case KeyRune:
 		if ev.Rune >= 32 && ev.Rune != '/' {
 			t.searchQuery += string(ev.Rune)
-			t.renderPending = true
+			t.renderPending.Store(true)
 		}
 	}
 }
@@ -387,7 +389,7 @@ func (t *TUI) openTargetPicker() {
 	t.pickerIndex = 0
 	t.pickerMsg = ""
 	t.pickerOpen = true
-	t.renderPending = true
+	t.renderPending.Store(true)
 }
 
 func (t *TUI) handlePickerInput(ev InputEvent) {
@@ -401,7 +403,7 @@ func (t *TUI) handlePickerInput(ev InputEvent) {
 				t.pickerIndex++
 			case 'q', 'Q':
 				t.pickerOpen = false
-				t.renderPending = true
+				t.renderPending.Store(true)
 				return
 			default:
 				return
@@ -412,18 +414,18 @@ func (t *TUI) handlePickerInput(ev InputEvent) {
 		if t.pickerIndex < 0 {
 			t.pickerIndex = len(t.pickerTargets) - 1
 		}
-		t.renderPending = true
+		t.renderPending.Store(true)
 	case KeyDown:
 		t.pickerIndex++
 		if t.pickerIndex >= len(t.pickerTargets) {
 			t.pickerIndex = 0
 		}
-		t.renderPending = true
+		t.renderPending.Store(true)
 	case KeyEnter:
 		t.saveTargetConfig()
 	case KeyEsc:
 		t.pickerOpen = false
-		t.renderPending = true
+		t.renderPending.Store(true)
 	case KeyCtrlC:
 		t.quit = true
 	}
@@ -442,7 +444,7 @@ func (t *TUI) saveTargetConfig() {
 	}
 	if current == nil {
 		t.pickerMsg = "no model selected"
-		t.renderPending = true
+		t.renderPending.Store(true)
 		return
 	}
 
@@ -458,7 +460,7 @@ func (t *TUI) saveTargetConfig() {
 		}
 	}
 	t.pickerOpen = false
-	t.renderPending = true
+	t.renderPending.Store(true)
 }
 
 func targetBinary(name string) string {
@@ -499,12 +501,12 @@ func (t *TUI) renderTargetPicker() string {
 
 func (t *TUI) navigate(delta int) {
 	t.paused = true
-	t.pauseUntil = time.Now().Add(1500 * time.Millisecond)
+	t.pauseUntil = time.Now().Add(t.pauseMs)
 	t.selected += delta
 	if t.selected < 0 {
 		t.selected = 0
 	}
-	t.renderPending = true
+	t.renderPending.Store(true)
 }
 
 func (t *TUI) visibleCount() int {
@@ -583,20 +585,20 @@ func (t *TUI) handleSettingsInput(ev InputEvent) {
 			}
 			t.settingsKeyEdit = false
 			t.settingsKeyBuf = ""
-			t.renderPending = true
+			t.renderPending.Store(true)
 		case KeyEsc:
 			t.settingsKeyEdit = false
 			t.settingsKeyBuf = ""
-			t.renderPending = true
+			t.renderPending.Store(true)
 		case KeyBackspace:
 			if t.settingsKeyBuf != "" {
 				t.settingsKeyBuf = t.settingsKeyBuf[:len(t.settingsKeyBuf)-1]
-				t.renderPending = true
+				t.renderPending.Store(true)
 			}
 		case KeyRune:
 			if ev.Rune >= 32 {
 				t.settingsKeyBuf += string(ev.Rune)
-				t.renderPending = true
+				t.renderPending.Store(true)
 			}
 		}
 		return
@@ -605,7 +607,7 @@ func (t *TUI) handleSettingsInput(ev InputEvent) {
 	if ev.Key == KeyEsc || ev.Key == KeyRune && (ev.Rune == 'q' || ev.Rune == 'Q') {
 		t.showSettings = false
 		t.settingsTestMsg = ""
-		t.renderPending = true
+		t.renderPending.Store(true)
 		return
 	}
 
@@ -616,12 +618,12 @@ func (t *TUI) handleSettingsInput(ev InputEvent) {
 			case 'k':
 				if t.settingsIndex > 0 {
 					t.settingsIndex--
-					t.renderPending = true
+					t.renderPending.Store(true)
 				}
 			case 'j':
 				if t.settingsIndex < len(providers)-1 {
 					t.settingsIndex++
-					t.renderPending = true
+					t.renderPending.Store(true)
 				}
 			case ' ':
 				if t.cfg != nil && t.settingsIndex < len(providers) {
@@ -633,12 +635,12 @@ func (t *TUI) handleSettingsInput(ev InputEvent) {
 					pcfg.Enabled = !pcfg.Enabled
 					t.cfg.Providers[name] = pcfg
 					_ = config.Save(t.cfg)
-					t.renderPending = true
+					t.renderPending.Store(true)
 				}
 			case 'T':
 				if t.settingsIndex < len(providers) {
 					t.settingsTestMsg = t.testProviderPing(providers[t.settingsIndex].Name)
-					t.renderPending = true
+					t.renderPending.Store(true)
 				}
 			case 'D':
 				if t.cfg != nil && t.settingsIndex < len(providers) {
@@ -649,22 +651,22 @@ func (t *TUI) handleSettingsInput(ev InputEvent) {
 						t.cfg.Providers[name] = pcfg
 					}
 					_ = config.Save(t.cfg)
-					t.renderPending = true
+					t.renderPending.Store(true)
 				}
 			}
 		} else if t.settingsIndex > 0 {
 			t.settingsIndex--
-			t.renderPending = true
+			t.renderPending.Store(true)
 		}
 	case KeyDown:
 		if t.settingsIndex < len(providers)-1 {
 			t.settingsIndex++
-			t.renderPending = true
+			t.renderPending.Store(true)
 		}
 	case KeyEnter:
 		t.settingsKeyEdit = true
 		t.settingsKeyBuf = ""
-		t.renderPending = true
+		t.renderPending.Store(true)
 	}
 }
 
@@ -736,7 +738,7 @@ func (t *TUI) cycleTierFilter() {
 		}
 	}
 	t.tierFilter = tiers[next]
-	t.renderPending = true
+	t.renderPending.Store(true)
 }
 
 func (t *TUI) cycleProviderFilter() {
@@ -749,7 +751,7 @@ func (t *TUI) cycleProviderFilter() {
 		}
 	}
 	t.providerFilter = providers[next]
-	t.renderPending = true
+	t.renderPending.Store(true)
 }
 
 func (t *TUI) changeInterval(dir int) {
@@ -764,7 +766,7 @@ func (t *TUI) changeInterval(dir int) {
 		}
 	}
 	t.engine.SetInterval(time.Duration(t.intervalMs) * time.Millisecond)
-	t.renderPending = true
+	t.renderPending.Store(true)
 }
 
 func (t *TUI) setSort(key string) {
@@ -774,7 +776,7 @@ func (t *TUI) setSort(key string) {
 		t.sortKey = key
 		t.sortReverse = false
 	}
-	t.renderPending = true
+	t.renderPending.Store(true)
 }
 
 func containsLower(s, sub string) bool {

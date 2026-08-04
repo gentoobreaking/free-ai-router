@@ -11,13 +11,12 @@ import (
 )
 
 const (
-	InitialConcurrency   = 64
-	SteadyConcurrency    = 20
-	InitialTimeout       = 2500 * time.Millisecond
-	SteadyTimeout        = 6 * time.Second
-	DefaultInterval      = 2 * time.Second
-	HistoryCap           = 100
-	MaxBackoffSkipRounds = 16
+	InitialConcurrency = 64
+	SteadyConcurrency  = 20
+	InitialTimeout     = 2500 * time.Millisecond
+	SteadyTimeout      = 6 * time.Second
+	DefaultInterval    = 2 * time.Second
+	HistoryCap         = 100
 )
 
 type Result struct {
@@ -307,7 +306,7 @@ func (e *Engine) pingOne(m *models.Model, timeout time.Duration) {
 		ModelID:  m.ID,
 		Latency:  elapsed,
 		HTTPCode: resp.StatusCode,
-		Status:   statusFromCode(resp.StatusCode),
+		Status:   StatusFromCode(resp.StatusCode),
 	})
 }
 
@@ -321,7 +320,7 @@ func isTimeout(err error) bool {
 	return false
 }
 
-func statusFromCode(code int) string {
+func StatusFromCode(code int) string {
 	switch code {
 	case 200:
 		return "up"

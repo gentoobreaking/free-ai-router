@@ -91,8 +91,8 @@ func TestStatusFromCode(t *testing.T) {
 		{502, "down"},
 	}
 	for _, tt := range tests {
-		if got := statusFromCode(tt.code); got != tt.want {
-			t.Errorf("statusFromCode(%d) = %q, want %q", tt.code, got, tt.want)
+		if got := StatusFromCode(tt.code); got != tt.want {
+			t.Errorf("StatusFromCode(%d) = %q, want %q", tt.code, got, tt.want)
 		}
 	}
 }

@@ -26,7 +26,6 @@ type Router struct {
 	pinned      string
 	pinningMode string
 	cooldowns   map[string]time.Time
-	modelGroups map[string][]string
 }
 
 type modelRequest struct {
@@ -51,7 +50,6 @@ func NewRouter(registry *models.Registry, logger *Logger) *Router {
 		pool:        ping.NewTransportPool(),
 		pinningMode: "canonical",
 		cooldowns:   make(map[string]time.Time),
-		modelGroups: make(map[string][]string),
 	}
 }
 
@@ -281,7 +279,12 @@ func (r *Router) markFailure(m *models.Model) {
 func (r *Router) forward(w http.ResponseWriter, req *http.Request, m *models.Model, body []byte, start time.Time) (bool, int, []byte, time.Duration, error) {
 	upstreamBody, err := rewriteModel(body, m.UpstreamModelID)
 	if err != nil {
-		return false, 0, nil, 0, err
+		// Defensive: a body that parsed as a request but is not a JSON
+		// object is a client error, not an upstream failure (§7.3 step 6).
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid request body: expected a JSON object",
+		})
+		return true, http.StatusBadRequest, nil, 0, nil
 	}
 
 	upstreamReq, err := http.NewRequest(http.MethodPost, m.Endpoint, bytes.NewReader(upstreamBody))
@@ -416,12 +419,51 @@ func extractUsage(body []byte) map[string]int {
 	}
 }
 
+// hopByHopHeaders are single-hop headers that must not be forwarded to the
+// client (RFC 7230 §6.1); the "Connection" header may name additional ones.
+var hopByHopHeaders = []string{
+	"connection",
+	"keep-alive",
+	"proxy-authenticate",
+	"proxy-authorization",
+	"proxy-connection",
+	"te",
+	"trailer",
+	"transfer-encoding",
+	"upgrade",
+}
+
 func copyHeaders(dst, src http.Header) {
+	skip := make(map[string]bool)
+	for k := range src {
+		if isHopByHop(k) {
+			skip[strings.ToLower(k)] = true
+			if strings.EqualFold(k, "connection") {
+				for _, v := range src[k] {
+					for _, name := range strings.Split(v, ",") {
+						skip[strings.ToLower(strings.TrimSpace(name))] = true
+					}
+				}
+			}
+		}
+	}
 	for k, vv := range src {
+		if skip[strings.ToLower(k)] {
+			continue
+		}
 		for _, v := range vv {
 			dst.Add(k, v)
 		}
 	}
+}
+
+func isHopByHop(k string) bool {
+	for _, h := range hopByHopHeaders {
+		if strings.EqualFold(h, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsTag(tags []string, tag string) bool {

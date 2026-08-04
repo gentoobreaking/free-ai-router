@@ -70,10 +70,10 @@ func run() error {
 	return runTUI(opts)
 }
 
-func buildRegistry() (*models.Registry, *models.TagManager, error) {
+func buildRegistry() (*models.Registry, *models.TagManager, *providers.Manager, error) {
 	provMgr := providers.NewManager()
 	if err := provMgr.LoadSources(providers.DataDir() + "/data/sources.json"); err != nil {
-		return nil, nil, fmt.Errorf("failed to load sources: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to load sources: %w", err)
 	}
 
 	registry := models.NewRegistry()
@@ -120,7 +120,7 @@ func buildRegistry() (*models.Registry, *models.TagManager, error) {
 
 	applyEndpoints(registry, provMgr)
 
-	return registry, tagMgr, nil
+	return registry, tagMgr, provMgr, nil
 }
 
 func applyEndpoints(registry *models.Registry, provMgr *providers.Manager) {
@@ -143,7 +143,7 @@ func applyEndpoints(registry *models.Registry, provMgr *providers.Manager) {
 }
 
 func runTUI(opts *cli.Options) error {
-	registry, _, err := buildRegistry()
+	registry, _, _, err := buildRegistry()
 	if err != nil {
 		return err
 	}
@@ -165,8 +165,6 @@ func runTUI(opts *cli.Options) error {
 
 	t := tui.New(&tui.Config{
 		ScrollSortPauseMs: cfg.UI.ScrollSortPauseMs,
-		ForceClear:        os.Getenv("FREMODEL_TUI_FORCE_CLEAR") == "1",
-		ConfigPath:        os.Getenv("FREMODEL_CONFIG_PATH"),
 	})
 	t.SetRegistry(registry)
 	t.SetConfig(cfg)
@@ -174,7 +172,7 @@ func runTUI(opts *cli.Options) error {
 }
 
 func runServer(opts *cli.Options) error {
-	registry, _, err := buildRegistry()
+	registry, _, provMgr, err := buildRegistry()
 	if err != nil {
 		return err
 	}
@@ -199,18 +197,12 @@ func runServer(opts *cli.Options) error {
 	engine.Start()
 	defer engine.Stop()
 
-	port := opts.Port
-	if env := os.Getenv("FREMODEL_PORT"); env != "" {
-		var p int
-		_, err := fmt.Sscanf(env, "%d", &p)
-		if err == nil && p > 0 {
-			port = p
-		}
-	}
+	port := config.GetPort(opts.Port)
 
 	logEnabled := opts.Log || os.Getenv("FREMODEL_LOG") == "1"
 	srv := router.NewServer(registry, cfg, port, cli.Version, logEnabled)
 	srv.SetPool(pool)
+	srv.SetProviders(provMgr)
 
 	log.Printf("freemodel router listening on 127.0.0.1:%d", port)
 	return srv.Start()
@@ -236,7 +228,7 @@ func applyRouterConfig(registry *models.Registry, cfg *config.Config, opts *cli.
 }
 
 func runBest(opts *cli.Options) error {
-	registry, _, err := buildRegistry()
+	registry, _, _, err := buildRegistry()
 	if err != nil {
 		return err
 	}

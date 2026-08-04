@@ -36,7 +36,7 @@ func RunStatus() error {
 
 	fmt.Println()
 	fmt.Println("Router:")
-	fmt.Println("  http://127.0.0.1:7352/v1")
+	fmt.Printf("  http://127.0.0.1:%d/v1\n", config.GetPort(7352))
 
 	return nil
 }

@@ -232,9 +232,26 @@ func EnvVarForProvider(provider string) string {
 	return ""
 }
 
+// DataDir resolves the directory containing the data/ folder:
+//  1. $FREMODEL_DATA_DIR if set
+//  2. the compile-time source directory (dev machines)
+//  3. the executable's directory (containers where the binary sits next to data/)
 func DataDir() string {
+	if env := os.Getenv("FREMODEL_DATA_DIR"); env != "" {
+		return env
+	}
 	_, filename, _, _ := runtime.Caller(0)
-	return filepath.Dir(filepath.Dir(filepath.Dir(filename)))
+	srcDir := filepath.Dir(filepath.Dir(filepath.Dir(filename)))
+	if _, err := os.Stat(filepath.Join(srcDir, "data")); err == nil {
+		return srcDir
+	}
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		if _, err := os.Stat(filepath.Join(exeDir, "data")); err == nil {
+			return exeDir
+		}
+	}
+	return srcDir
 }
 
 var (

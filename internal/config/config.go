@@ -141,6 +141,18 @@ func Load() (*Config, error) {
 	return normalizeConfig(&cfg), nil
 }
 
+// GetPort resolves the router port: $FREMODEL_PORT overrides the default
+// (spec §18 env vars).
+func GetPort(defaultPort int) int {
+	if env := os.Getenv("FREMODEL_PORT"); env != "" {
+		var p int
+		if _, err := fmt.Sscanf(env, "%d", &p); err == nil && p > 0 {
+			return p
+		}
+	}
+	return defaultPort
+}
+
 func Save(cfg *Config) error {
 	path, err := ConfigPath()
 	if err != nil {

@@ -3,28 +3,32 @@ package router
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/freemodel/router/internal/config"
 	"github.com/freemodel/router/internal/models"
 	"github.com/freemodel/router/internal/ping"
+	"github.com/freemodel/router/internal/providers"
 )
 
 const DefaultPort = 7352
 
 type Server struct {
-	mu       sync.RWMutex
-	registry *models.Registry
-	cfg      interface{}
-	port     int
-	router   *Router
-	version  string
-	logger   *Logger
-	handler  http.Handler
+	mu        sync.RWMutex
+	registry  *models.Registry
+	cfg       interface{}
+	port      int
+	router    *Router
+	version   string
+	logger    *Logger
+	handler   http.Handler
+	providers *providers.Manager
 }
 
 func NewServer(registry *models.Registry, cfg interface{}, port int, version string, logEnabled bool) *Server {
@@ -49,6 +53,11 @@ func (s *Server) Start() error {
 // the proxy router (§7.4).
 func (s *Server) SetPool(pool *ping.TransportPool) {
 	s.router.SetPool(pool)
+}
+
+// SetProviders wires the provider source manager used by discovery endpoints.
+func (s *Server) SetProviders(mgr *providers.Manager) {
+	s.providers = mgr
 }
 
 func (s *Server) Handler() http.Handler {
@@ -146,7 +155,7 @@ func (s *Server) handleAPIModels(w http.ResponseWriter, r *http.Request) {
 			Status:     m.Status,
 			AvgLatency: m.AvgLatency,
 			Uptime:     m.Uptime,
-			Verdict:    VerdictFor(m),
+			Verdict:    ping.GetVerdict(m),
 			Tags:       m.Tags,
 			Tier:       m.Tier,
 		})
@@ -281,16 +290,20 @@ func (s *Server) handleAPIModelsBan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 		return
 	}
+	var banned bool
 	s.registry.UpdateModel(payload.ModelID, func(x *models.Model) {
 		if payload.Banned != nil {
 			x.Banned = *payload.Banned
 		} else {
 			x.Banned = !x.Banned
 		}
+		banned = x.Banned
 	})
-	writeJSON(w, http.StatusOK, map[string]interface{}{"banned": m.Banned})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"banned": banned})
 }
 
+// handleAPIModelsPing runs a real synchronous single-model ping and reports
+// the outcome without mutating registry state (spec §7.2).
 func (s *Server) handleAPIModelsPing(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		ModelID string `json:"modelId"`
@@ -299,16 +312,143 @@ func (s *Server) handleAPIModelsPing(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	if payload.ModelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "modelId is required"})
+		return
+	}
+	m := s.registry.Get(payload.ModelID)
+	if m == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
+		return
+	}
+	status, httpCode, latency := pingModelNow(m)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"modelId":   m.ID,
+		"status":    status,
+		"httpCode":  httpCode,
+		"latencyMs": latency.Milliseconds(),
+	})
 }
 
+// pingModelNow performs a single ping against the model's endpoint with a
+// short timeout (mirrors the TUI test-ping path).
+func pingModelNow(m *models.Model) (string, int, time.Duration) {
+	if m.Endpoint == "" {
+		return "down", 0, 0
+	}
+	start := time.Now()
+	body := `{"model":"` + m.UpstreamModelID + `","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`
+	req, err := http.NewRequest(http.MethodPost, m.Endpoint, strings.NewReader(body))
+	if err != nil {
+		return "down", 0, 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if m.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+m.APIKey)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "down", 0, time.Since(start)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return ping.StatusFromCode(resp.StatusCode), resp.StatusCode, time.Since(start)
+}
+
+// handleAPIProviders runs discovery for a single provider and merges the
+// discovered models into the registry (spec §7.2 /api/providers/<key>).
 func (s *Server) handleAPIProviders(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/providers/")
-	writeJSON(w, http.StatusOK, map[string]interface{}{"refreshed": path})
+	key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/providers/"), "/")
+	if key == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider key is required"})
+		return
+	}
+	if s.providers == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "provider manager not available"})
+		return
+	}
+	if s.providers.GetProvider(key) == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown provider"})
+		return
+	}
+	discovered, err := s.providers.DiscoverModels(key)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	added := s.mergeDiscovered(key, discovered)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"provider":   key,
+		"discovered": len(discovered),
+		"added":      added,
+	})
 }
 
+// handleAPIProvidersRefreshAll discovers models for every keyed, enabled,
+// discoverable provider and merges the results into the registry.
 func (s *Server) handleAPIProvidersRefreshAll(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	if s.providers == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "provider manager not available"})
+		return
+	}
+	cfg, _ := s.cfg.(*config.Config)
+	refreshed := []string{}
+	added := 0
+	for _, p := range s.providers.GetAllProviders() {
+		if !p.Discoverable || !providerEnabled(cfg, p.Key) {
+			continue
+		}
+		discovered, err := s.providers.DiscoverModels(p.Key)
+		if err != nil {
+			continue
+		}
+		added += s.mergeDiscovered(p.Key, discovered)
+		refreshed = append(refreshed, p.Key)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"refreshed": refreshed, "added": added})
+}
+
+func providerEnabled(cfg *config.Config, key string) bool {
+	if cfg == nil {
+		return true
+	}
+	if config.ResolveAPIKey(key, cfg) == "" {
+		return false
+	}
+	if pcfg, ok := cfg.Providers[key]; ok {
+		return pcfg.Enabled
+	}
+	return true
+}
+
+// mergeDiscovered adds discovered models that are not already in the registry
+// and returns the number of new models.
+func (s *Server) mergeDiscovered(providerKey string, discovered []providers.ModelEntry) int {
+	added := 0
+	for _, me := range discovered {
+		if me.ID == "" || s.registry.Get(me.ID) != nil {
+			continue
+		}
+		m := &models.Model{
+			ID:       me.ID,
+			Provider: providerKey,
+			Label:    me.Label,
+			Context:  me.Context,
+			Status:   "pending",
+		}
+		parts := strings.SplitN(me.ID, "/", 2)
+		if len(parts) == 2 {
+			m.UpstreamModelID = parts[1]
+		}
+		if p := s.providers.GetProvider(providerKey); p != nil {
+			m.Endpoint = p.URL
+			m.ProviderHost = p.BaseURL
+		}
+		s.registry.Add(m)
+		added++
+	}
+	return added
 }
 
 func (s *Server) handleAPIConfigImport(w http.ResponseWriter, r *http.Request) {
@@ -348,8 +488,38 @@ func (s *Server) handleAPIConfigExport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
+// handleAPIAccountStatus reports per-provider key counts and enabled state
+// from config + env overrides (spec §7.2 /api/account-status).
 func (s *Server) handleAPIAccountStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{"accounts": []interface{}{}})
+	cfg, ok := s.cfg.(*config.Config)
+	if !ok || cfg == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"accounts": []interface{}{}})
+		return
+	}
+	names := []string{}
+	seen := map[string]bool{}
+	addName := func(n string) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for name := range cfg.Providers {
+		addName(name)
+	}
+	for name := range cfg.APIKeys {
+		addName(name)
+	}
+	accounts := make([]map[string]interface{}, 0, len(names))
+	for _, name := range names {
+		pcfg := cfg.Providers[name]
+		accounts = append(accounts, map[string]interface{}{
+			"provider": name,
+			"keyCount": len(config.ResolveAPIKeys(name, cfg)),
+			"enabled":  pcfg.Enabled,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"accounts": accounts})
 }
 
 func (s *Server) handleAPIAutoUpdateGet(w http.ResponseWriter, r *http.Request) {
@@ -406,8 +576,12 @@ func (s *Server) handleAPIModelsTags(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "model not found"})
 		return
 	}
-	s.registry.UpdateModel(payload.ModelID, func(x *models.Model) { x.Tags = payload.Tags })
-	writeJSON(w, http.StatusOK, map[string]interface{}{"tags": m.Tags})
+	var tags []string
+	s.registry.UpdateModel(payload.ModelID, func(x *models.Model) {
+		x.Tags = payload.Tags
+		tags = x.Tags
+	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"tags": tags})
 }
 
 func (s *Server) handleAPIFilterRulesGet(w http.ResponseWriter, r *http.Request) {
@@ -458,33 +632,6 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func VerdictFor(m *models.Model) string {
-	if m.Status == "ratelimit" {
-		return "Overloaded"
-	}
-	if m.Status == "pending" {
-		return "Pending"
-	}
-	if m.Status != "up" {
-		return "Not Active"
-	}
-	if m.AvgLatency == 0 {
-		return "Pending"
-	}
-	switch {
-	case m.AvgLatency < 400:
-		return "Perfect"
-	case m.AvgLatency < 1000:
-		return "Normal"
-	case m.AvgLatency < 3000:
-		return "Slow"
-	case m.AvgLatency < 5000:
-		return "Very Slow"
-	default:
-		return "Unusable"
-	}
 }
 
 func logFilePath() (string, error) {

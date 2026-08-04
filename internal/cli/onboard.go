@@ -84,7 +84,7 @@ func RunOnboard() error {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
-	fmt.Println("  Config saved. Starting TUI...")
+	fmt.Println("  Config saved. Done.")
 	return nil
 }
 
