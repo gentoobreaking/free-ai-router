@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/freemodel/router/internal/models"
@@ -64,8 +65,8 @@ func visualLen(s string) int {
 
 func (r *Renderer) renderHeader(opts *RenderOptions) {
 	w := opts.Width
-	if w < tableWidth {
-		w = tableWidth
+	if w < 60 {
+		w = 60
 	}
 
 	r.builder.WriteString(BorderRow(w - 2))
@@ -117,18 +118,34 @@ func (r *Renderer) renderHeader(opts *RenderOptions) {
 	r.builder.WriteString("\n")
 }
 
-const tableWidth = 139
+const (
+	fixedColWidth = 4 + 6 + 13 + 7 + 6 + 8 + 8 + 6 + 16 // sum of all columns except Model
+	separatorWidth = 31                                     // │ + spaces between columns + │
+)
+
+func modelColWidth(termWidth int) int {
+	w := termWidth - fixedColWidth - separatorWidth
+	if w < 5 {
+		w = 5
+	}
+	if w > 34 {
+		w = 34
+	}
+	return w
+}
 
 func (r *Renderer) renderTable(opts *RenderOptions) {
 	w := opts.Width
-	if w < tableWidth {
-		w = tableWidth
+	if w < 60 {
+		w = 60
 	}
+
+	modelW := modelColWidth(w)
 
 	r.builder.WriteString(BorderRow(w - 2))
 	r.builder.WriteString("\n")
 
-	header := fmt.Sprintf("│ %-4s │ %s │ %-13s │ %-34s │ %-7s │ %-6s │ %8s │ %8s │ %6s │ %s │\n",
+	header := fmt.Sprintf("│ %-4s │ %s │ %-13s │ %-"+strconv.Itoa(modelW)+"s │ %-7s │ %-6s │ %8s │ %8s │ %6s │ %s │\n",
 		"#",
 		coloredCell("Tier", 6, Bold),
 		"Provider", "Model", "Ctx", "Bench", "Avg", "Lat", "Up%",
@@ -158,12 +175,12 @@ func (r *Renderer) renderTable(opts *RenderOptions) {
 			bench = fmt.Sprintf("%.2f", m.QualityScore)
 		}
 
-		row := fmt.Sprintf("│ %s%-3d │ %s │ %-13s │ %-34s │ %-7s │ %-6s │ %8.0f │ %8.0f │ %5.1f%% │ %s │\n",
+		row := fmt.Sprintf("│ %s%-3d │ %s │ %-13s │ %-"+strconv.Itoa(modelW)+"s │ %-7s │ %-6s │ %8.0f │ %8.0f │ %5.1f%% │ %s │\n",
 			marker,
 			i+1,
 			coloredCell(m.Tier, 6, TierColor(m.Tier)),
 			truncateStr(m.Provider, 13),
-			truncateStr(m.Label, 34),
+			truncateStr(m.Label, modelW),
 			truncateStr(m.Context, 7),
 			bench,
 			m.AvgLatency,
@@ -186,8 +203,8 @@ func (r *Renderer) renderTable(opts *RenderOptions) {
 
 func (r *Renderer) renderFooter(opts *RenderOptions) {
 	w := opts.Width
-	if w < tableWidth {
-		w = tableWidth
+	if w < 60 {
+		w = 60
 	}
 
 	r.builder.WriteString(SeparatorRow(w - 2))
