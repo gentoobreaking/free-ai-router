@@ -1,8 +1,10 @@
 package ping
 
 import (
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -296,6 +298,13 @@ func (e *Engine) pingOne(m *models.Model, timeout time.Duration) {
 
 	start := time.Now()
 
+	// Use Pollinations /text endpoint when no API key is available
+	if m.Provider == "pollinations" && m.APIKey == "" {
+		if e.pingPollinationsText(m, timeout) {
+			return
+		}
+	}
+
 	body := `{"model":"` + m.UpstreamModelID + `","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`
 	req, err := http.NewRequest(http.MethodPost, m.Endpoint, strings.NewReader(body))
 	if err != nil {
@@ -333,6 +342,43 @@ func (e *Engine) pingOne(m *models.Model, timeout time.Duration) {
 		HTTPCode: resp.StatusCode,
 		Status:   StatusFromCode(resp.StatusCode),
 	})
+}
+
+// pingPollinationsText pings the Pollinations /text endpoint without auth.
+// Returns true if the ping was handled, false to fall back to normal ping.
+func (e *Engine) pingPollinationsText(m *models.Model, timeout time.Duration) bool {
+	mappedModel := m.ID
+	if idx := strings.Index(m.ID, "/"); idx > 0 {
+		mappedModel = m.ID[idx+1:]
+	}
+
+	prompt := "hi"
+	testURL := fmt.Sprintf("https://text.pollinations.ai/%s?model=%s",
+		url.PathEscape(prompt), url.QueryEscape(mappedModel))
+
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(testURL)
+	if err != nil {
+		elapsed := time.Since(time.Now())
+		status := "down"
+		if isTimeout(err) {
+			status = "timeout"
+		}
+		e.apply(m, Result{ModelID: m.ID, Latency: elapsed, Status: status, Err: err})
+		return true
+	}
+
+	elapsed := time.Since(time.Now())
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	e.apply(m, Result{
+		ModelID:  m.ID,
+		Latency:  elapsed,
+		HTTPCode: resp.StatusCode,
+		Status:   StatusFromCode(resp.StatusCode),
+	})
+	return true
 }
 
 func isTimeout(err error) bool {
